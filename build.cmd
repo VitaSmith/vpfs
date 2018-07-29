@@ -1,5 +1,5 @@
 @echo off
-
+set APP_NAME=vpdb.exe
 call "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64
 cd /d "%~dp0"
 
@@ -10,4 +10,6 @@ set CL=%CL% /Ox
 rem set CL=%CL% /Od /Zi
 rem set LINK=%LINK% /DEBUG
 
-cl.exe pkg2zip*.c miniz_tdef.c puff.c /Fepkg2zip.exe
+cl.exe vpdb*.c /Fe%APP_NAME%
+if %ERRORLEVEL% equ 0 echo =^> %APP_NAME%
+pause
