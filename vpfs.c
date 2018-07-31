@@ -46,12 +46,13 @@
 
 #define PKG_HEADER_SIZE         192
 #define PKG_HEADER_EXT_SIZE     64
-#define MAX_FILENAME            1024
 
 // https://wiki.henkaku.xyz/vita/Packages#AES_Keys
-static const uint8_t pkg_vita_2[] = { 0xe3, 0x1a, 0x70, 0xc9, 0xce, 0x1d, 0xd7, 0x2b, 0xf3, 0xc0, 0x62, 0x29, 0x63, 0xf2, 0xec, 0xcb };
-static const uint8_t pkg_vita_3[] = { 0x42, 0x3a, 0xca, 0x3a, 0x2b, 0xd5, 0x64, 0x9f, 0x96, 0x86, 0xab, 0xad, 0x6f, 0xd8, 0x80, 0x1f };
-static const uint8_t pkg_vita_4[] = { 0xaf, 0x07, 0xfd, 0x59, 0x65, 0x25, 0x27, 0xba, 0xf1, 0x33, 0x89, 0x66, 0x8b, 0x17, 0xd9, 0xea };
+static const uint8_t pkg_aes_key[3][16] = {
+    { 0xe3, 0x1a, 0x70, 0xc9, 0xce, 0x1d, 0xd7, 0x2b, 0xf3, 0xc0, 0x62, 0x29, 0x63, 0xf2, 0xec, 0xcb },
+    { 0x42, 0x3a, 0xca, 0x3a, 0x2b, 0xd5, 0x64, 0x9f, 0x96, 0x86, 0xab, 0xad, 0x6f, 0xd8, 0x80, 0x1f },
+    { 0xaf, 0x07, 0xfd, 0x59, 0x65, 0x25, 0x27, 0xba, 0xf1, 0x33, 0x89, 0x66, 0x8b, 0x17, 0xd9, 0xea }
+};
 
 // http://vitadevwiki.com/vita/System_File_Object_(SFO)_(PSF)#Internal_Structure
 // https://github.com/TheOfficialFloW/VitaShell/blob/1.74/sfo.h#L29
@@ -211,18 +212,29 @@ static void parse_sfo(sys_file f, uint64_t sfo_offset, uint32_t sfo_size, char* 
 }
 
 typedef enum {
-    PKG_TYPE_VITA_APP,
+    PKG_TYPE_VITA_APP = 0,
     PKG_TYPE_VITA_DLC,
     PKG_TYPE_VITA_PATCH,
     PKG_TYPE_VITA_PSM,
 } pkg_type;
 
+const char* pkg_type_name[] = {
+    "Vita APP",
+    "Vita DLC",
+    "Vita PATCH",
+    "Vita PSM",
+};
+
 static bool separate_console()
 {
 #if defined(_WIN32) || defined(__CYGWIN__)
     CONSOLE_SCREEN_BUFFER_INFO csbi;
+
     if (!GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi))
-        return 0;
+    {
+        return false;
+    }
+
     return ((!csbi.dwCursorPosition.X) && (!csbi.dwCursorPosition.Y));
 #elif defined(__vita__)
     return true;
@@ -234,16 +246,21 @@ static bool separate_console()
 static dir_entry* direntry_create(const char* path)
 {
     dir_entry* entry = calloc(1, sizeof(dir_entry));
-    if (entry == NULL)
-        return NULL;
+
+    assert(entry != NULL);
+
     entry->path = path;
+
     return entry;
 }
 
 static bool direntry_add(dir_entry* entry, const char* path)
 {
     if (entry == NULL)
+    {
         return false;
+    }
+
     if (entry->index == entry->max)
     {
         if (entry->max == 0)
@@ -251,36 +268,39 @@ static bool direntry_add(dir_entry* entry, const char* path)
             entry->max = DIRENTRY_INITIAL_CHILDREN_SIZE;
             entry->children = calloc(entry->max, sizeof(dir_entry));
             if (entry->children == NULL)
+            {
                 return false;
+            }
         }
         else
         {
             entry->max *= 2;
-            dir_entry* old_table = entry->children;
             entry->children = (dir_entry*)realloc(entry->children, entry->max * sizeof(dir_entry));
-            memset(&entry->children[entry->max / 2], 0, entry->max / 2 * sizeof(dir_entry));
             if (entry->children == NULL)
             {
-                free(old_table);
-                entry->index = 0;
-                entry->max = 0;
-                sys_output("Could not reallocate dir_entry array\n");
-                return false;
+                sys_error("Could not reallocate dir_entry array for %d entries\n", entry->max);
             }
-        }
+            memset(&entry->children[entry->max / 2], 0, entry->max / 2 * sizeof(dir_entry));
+         }
     }
+
     entry->children[entry->index++].path = path;
+
     return true;
 }
 
 static void direntry_destroy(dir_entry* entry)
 {
     if ((entry == NULL) && (entry->children == NULL))
+    {
         return;
+    }
+
     for (size_t i = 0; i < entry->index; i++)
     {
         direntry_destroy(&entry->children[i]);
     }
+
     free(entry->children);
 }
 
@@ -289,15 +309,19 @@ static dir_entry* find_item(dir_entry* entry, const char* path, size_t len)
     for (size_t i = 0; i < entry->index; i++)
     {
         if (strncmp(entry->children[i].path, path, len) == 0)
+        {
             return &entry->children[i];
+        }
     }
+
     return NULL;
 }
 
 // NB: This does not check if an item with the same path already exists
 static bool add_item(dir_entry* entry, const char* path)
 {
-    // Locate each directory along our path
+    assert(path != NULL);
+
     for (size_t i = 0; path[i] != 0; i++)
     {
         if ((path[i] == '/') && (path[i+1] != 0))
@@ -307,16 +331,19 @@ static bool add_item(dir_entry* entry, const char* path)
             assert(entry != NULL);
         }
     }
+
     return direntry_add(entry, path);
 }
 
 void display_fs(dir_entry* entry)
 {
     if (entry->path[strlen(entry->path) - 1] == '/')
-        sys_output("DIRECTORY %s\n", entry->path);
+    {
+        sys_printf("DIRECTORY %s\n", entry->path);
+    }
     for (size_t i = 0; i < entry->index; i++)
     {
-        sys_output("- %s\n", entry->children[i].path);
+        sys_printf("- %s\n", entry->children[i].path);
     }
     for (size_t i = 0; i < entry->index; i++)
     {
@@ -324,30 +351,37 @@ void display_fs(dir_entry* entry)
     }
 }
 
-void test_add_item(void)
+bool vpfs_init(vpfs_t *vpfs, uint32_t nb_pkgs, uint32_t nb_items)
 {
-    dir_entry *root = direntry_create("[ROOT]");
-    assert(root != NULL);
+    memset(vpfs, 0, sizeof(vpfs_t));
+    vpfs->header.magic = VPFS_MAGIC;
+    vpfs->header.version = VPFS_VERSION;
+    vpfs->header.nb_pkgs = nb_pkgs;
+    vpfs->pkg = calloc(nb_pkgs, sizeof(vpfs_pkg));
+    assert(vpfs->pkg != NULL);
+    vpfs->name = calloc(nb_items, sizeof(char*));
+    assert(vpfs->name != NULL);
+    vpfs->item = calloc(nb_items, sizeof(vpfs_item));
+    assert(vpfs->item != NULL);
+    vpfs->sha = calloc(nb_items, sizeof(uint64_t));
+    assert(vpfs->sha != NULL);
+    vpfs->root = direntry_create("[ROOT]");
+    assert(vpfs->root != NULL);
+    return true;
+}
 
-    assert(add_item(root, "first_level_dir1") == true);
-    assert(add_item(root, "first_level_dir1/second_level_file1.bin") == true);
-    assert(add_item(root, "first_level_dir1/second_level_dir1") == true);
-    assert(add_item(root, "first_level_dir2/second_level_dir2") == false);
-    assert(add_item(root, "first_level_dir2") == true);
-    assert(add_item(root, "first_level_file1.bin") == true);
-    assert(add_item(root, "first_level_dir2/second_level_dir3") == true);
-    assert(add_item(root, "first_level_dir2/second_level_dir3/third_level_file1.bin") == true);
-    assert(add_item(root, "first_level_dir2/second_level_dir3/third_level_file2.bin") == true);
-    assert(add_item(root, "first_level_dir1/second_level_file2.bin") == true);
-    assert(add_item(root, "first_level_dir2/second_level_dir3/third_level_file3.bin") == true);
-    assert(add_item(root, "first_level_dir2/second_level_dir3/third_level_file4.bin") == true);
-    assert(add_item(root, "first_level_dir2/second_level_dir3/third_level_file5.bin") == true);
-    sys_output("[*] test_add_item okay..\n");
-
-    display_fs(root);
-
-    direntry_destroy(root);
-    free(root);
+void vpfs_free(vpfs_t *vpfs)
+{
+    direntry_destroy(vpfs->root);
+    for (uint32_t i = 0; i < vpfs->header.nb_items; i++)
+    {
+        free(vpfs->name[i]);
+    }
+    free(vpfs->root);
+    free(vpfs->pkg);
+    free(vpfs->item);
+    free(vpfs->name);
+    free(vpfs->sha);
 }
 
 int main(int argc, char* argv[])
@@ -356,9 +390,7 @@ int main(int argc, char* argv[])
     sys_output_init();
     const char* pkg_arg = NULL;
 
-    sys_output("vpdb v0.5\n");
-
-//    test_add_item();
+    sys_printf("vpfs v0.6\n");
 
     if (argc != 2)
     {
@@ -366,15 +398,26 @@ int main(int argc, char* argv[])
         sys_error("Usage: %s file.pkg\n", argv[0]);
     }
     pkg_arg = argv[1];
-    sys_output("[*] loading...\n");
+    size_t base_name;
+    for (base_name = strlen(pkg_arg) - 1; base_name > 0; base_name--)
+    {
+        if ((pkg_arg[base_name] == '/') || (pkg_arg[base_name] == '\\'))
+        {
+            base_name++;
+            break;
+        }
+    }
 
+    sys_printf("[*] loading %s...\n", &pkg_arg[base_name]);
+
+    uint32_t pkg_index = 0;
     uint64_t pkg_size;
     sys_file pkg = sys_open(pkg_arg, &pkg_size);
 
     uint8_t pkg_header[PKG_HEADER_SIZE + PKG_HEADER_EXT_SIZE];
     sys_read(pkg, 0, pkg_header, sizeof(pkg_header));
 
-    if (get32be(pkg_header) != 0x7f504b47 || get32be(pkg_header + PKG_HEADER_SIZE) != 0x7F657874)
+    if (get32be(pkg_header) != 0x7f504b47 || get32be(pkg_header + PKG_HEADER_SIZE) != 0x7f657874)
     {
         sys_error("ERROR: not a pkg file\n");
     }
@@ -398,10 +441,6 @@ int main(int argc, char* argv[])
         sys_error("ERROR: pkg file is too small\n");
     }
 
-//    vpfs_header vfs_header = { VPFS_MAGIC, VPFS_VERSION, 0, 0 };
-    vpfs_pkg vfs_pkg = { 0 };
-    char** vfs_name = calloc(item_count, sizeof(char*));
-    vpfs_item* vfs_item = calloc(item_count, sizeof(vpfs_item));
     uint32_t content_type = 0;
     uint32_t sfo_offset = 0;
     uint32_t sfo_size = 0;
@@ -447,35 +486,19 @@ int main(int argc, char* argv[])
     }
     else
     {
-        // Can't be bothered about PSM/PSP/PSX
+        // Can't be bothered about PSM and PSP/PSX have their own package "virtualization"
         sys_error("ERROR: unsupported content type 0x%x", content_type);
     }
 
-    uint8_t main_key[16];
-    if (key_type == 1)
+    if ((key_type < 2) || (key_type > 4))
     {
-        sys_error("ERROR: unsupported PS3 key type");
-    }
-    else if (key_type == 2)
-    {
-        aes128_key key;
-        aes128_init(&key, pkg_vita_2);
-        aes128_ecb_encrypt(&key, iv, main_key);
-    }
-    else if (key_type == 3)
-    {
-        aes128_key key;
-        aes128_init(&key, pkg_vita_3);
-        aes128_ecb_encrypt(&key, iv, main_key);
-    }
-    else if (key_type == 4)
-    {
-        aes128_key key;
-        aes128_init(&key, pkg_vita_4);
-        aes128_ecb_encrypt(&key, iv, main_key);
+        sys_error("ERROR: unsupported key type");
     }
 
     aes128_key key;
+    uint8_t main_key[16];
+    aes128_init(&key, pkg_aes_key[key_type - 2]);
+    aes128_ecb_encrypt(&key, iv, main_key);
     aes128_init(&key, main_key);
 
     char content[256];
@@ -483,10 +506,7 @@ int main(int argc, char* argv[])
     char category[256];
     char min_version[256];
     char pkg_version[256];
-    const char* id = content + 7;
-    const char* id2 = id + 13;
 
-    // Vita APP, DLC or PATCH
     parse_sfo(pkg, sfo_offset, sfo_size, category, title, content, min_version, pkg_version);
 
     if (type == PKG_TYPE_VITA_APP && strcmp(category, "gp") == 0)
@@ -494,79 +514,21 @@ int main(int argc, char* argv[])
         type = PKG_TYPE_VITA_PATCH;
     }
 
-    char root[1024];
-    if (type == PKG_TYPE_VITA_DLC)
-    {
-//        snprintf(root, sizeof(root), "%s [%.9s] [%s] [DLC-%s]%s", title, id, get_region(id), id2, ext);
-        sys_output("[*] unpacking Vita DLC\n");
-    }
-    else if (type == PKG_TYPE_VITA_PATCH)
-    {
-//        snprintf(root, sizeof(root), "%s [%.9s] [%s] [PATCH] [v%s]%s", title, id, get_region(id), pkg_version, ext);
-        sys_output("[*] unpacking Vita PATCH\n");
-    }
-    else if (type == PKG_TYPE_VITA_APP)
-    {
-//        snprintf(root, sizeof(root), "%s [%.9s] [%s]%s", title, id, get_region(id), ext);
-        sys_output("[*] unpacking Vita APP\n");
-    }
-    else
-    {
-        assert(0);
-        sys_error("ERROR: unsupported type\n");
-    }
+    sys_printf("[*] processing %s\n", pkg_type_name[type]);
 
-//    sys_output("[*] creating '%s' archive\n", root);
-    vfs_pkg.type = type; // Not sure if really needed
-    // TODO: copy content_id?
-    snprintf(vfs_pkg.path, sizeof(vfs_pkg.path), "ux0:pkg/%s", pkg_arg);
-    memcpy(vfs_pkg.aes_key, main_key, sizeof(main_key));
-    memcpy(vfs_pkg.aes_iv, iv, 16);
+    vpfs_t vpfs;
+    vpfs_init(&vpfs, 1, item_count + NUM_EXTRA_ITEMS);
+    vpfs.pkg[pkg_index].type = type; // Not sure if really needed
+    strncpy(vpfs.pkg[pkg_index].content_id, content, sizeof(vpfs.pkg[pkg_index].content_id) - 1);
+    sys_printf("[*] content_id %s\n", vpfs.pkg[pkg_index].content_id);
+    snprintf(vpfs.pkg[pkg_index].path, sizeof(vpfs.pkg[pkg_index].path), "ux0:pkg/%s", pkg_arg);
+    memcpy(vpfs.pkg[pkg_index].aes_key, main_key, sizeof(main_key));
+    memcpy(vpfs.pkg[pkg_index].aes_iv, iv, 16);
 
-//     out_begin(root, zipped);
-    root[0] = 0;
-
-    if (type == PKG_TYPE_VITA_DLC)
-    {
-        sys_vstrncat(root, sizeof(root), "addcont");
-//        out_add_folder(root);
-
-        sys_vstrncat(root, sizeof(root), "/%.9s", id);
-//        out_add_folder(root);
-
-        sys_vstrncat(root, sizeof(root), "/%s", id2);
-//        out_add_folder(root);
-    }
-    else if (type == PKG_TYPE_VITA_PATCH)
-    {
-        sys_vstrncat(root, sizeof(root), "patch");
-//        out_add_folder(root);
-
-        sys_vstrncat(root, sizeof(root), "/%.9s", id);
-//        out_add_folder(root);
-    }
-    else if (type == PKG_TYPE_VITA_APP)
-    {
-        sys_vstrncat(root, sizeof(root), "app");
-//        out_add_folder(root);
-
-        sys_vstrncat(root, sizeof(root), "/%.9s", id);
-//        out_add_folder(root);
-    }
-    else
-    {
-        assert(0);
-        sys_error("ERROR: unsupported type\n");
-    }
-
-    char path[1024];
-
-    int sce_sys_package_created = 0;
+    bool sce_sys_package_created = false;
 
     sys_output_progress_init(pkg_size);
 
-    dir_entry *vfs_root = direntry_create("[ROOT]");
-    uint32_t vfs_index = 0;
     for (uint32_t item_index = 0; item_index < item_count; item_index++)
     {
         uint8_t item[32];
@@ -582,127 +544,118 @@ int main(int argc, char* argv[])
 
         assert(name_offset % 16 == 0);
         assert(data_offset % 16 == 0);
+        assert(pkg_size >= enc_offset + name_offset + name_size);
+        assert(pkg_size >= enc_offset + data_offset + data_size);
 
-        if (pkg_size < enc_offset + name_offset + name_size ||
-            pkg_size < enc_offset + data_offset + data_size)
-        {
-            sys_error("ERROR: pkg file is too short, possibly corrupted\n");
-        }
-
-        vfs_name[vfs_index] = malloc(name_size + 2);
+        vpfs.name[item_index] = malloc(name_size + 2);
         const aes128_key* item_key = &key;
-        sys_read(pkg, enc_offset + name_offset, vfs_name[vfs_index], name_size);
-        aes128_ctr_xor(item_key, iv, name_offset / 16, (uint8_t*)vfs_name[vfs_index], name_size);
-        vfs_name[vfs_index][name_size] = 0;
+        sys_read(pkg, enc_offset + name_offset, vpfs.name[item_index], name_size);
+        aes128_ctr_xor(item_key, iv, name_offset / 16, (uint8_t*)vpfs.name[item_index], name_size);
+        vpfs.name[item_index][name_size] = 0;
 
         if (flags == 4 || flags == 18)
         {
             // Directory
-            if (vfs_name[vfs_index][name_size - 1] != '/')
+            if (vpfs.name[item_index][name_size - 1] != '/')
             {
-                vfs_name[vfs_index][name_size++] = '/';
-                vfs_name[vfs_index][name_size] = 0;
+                vpfs.name[item_index][name_size++] = '/';
+                vpfs.name[item_index][name_size] = 0;
             }
-            assert(add_item(vfs_root, vfs_name[vfs_index]));
+
+            if (strcmp("sce_sys/package/", vpfs.name[item_index]) == 0)
+            {
+                sce_sys_package_created = true;
+            }
+
+            assert(add_item(vpfs.root, vpfs.name[item_index]));
+
+            // offset and size will be in the .vpfs > negative index
+            vpfs.item[item_index].flags = VPFS_ITEM_TYPE_DIR;
+            vpfs.item[item_index].pkg_index = -1;
         }
         else
         {
-            if ((type == PKG_TYPE_VITA_APP || type == PKG_TYPE_VITA_DLC || type == PKG_TYPE_VITA_PATCH) && strcmp("sce_sys/package/digs.bin", vfs_name[vfs_index]) == 0)
+            // Regular file
+            if ((type == PKG_TYPE_VITA_APP || type == PKG_TYPE_VITA_DLC || type == PKG_TYPE_VITA_PATCH) &&
+                strcmp("sce_sys/package/digs.bin", vpfs.name[item_index]) == 0)
             {
-                vfs_name[vfs_index] = _strdup("sce_sys/package/body.bin");
-                vfs_item[vfs_index].flags = VPFS_ITEM_TYPE_BIN;
+                vpfs.name[item_index] = _strdup("sce_sys/package/body.bin");
+                vpfs.item[item_index].flags = VPFS_ITEM_TYPE_BIN;
             }
             else
             {
-                vfs_item[vfs_index].flags = VPFS_ITEM_TYPE_AES;
+                vpfs.item[item_index].flags = VPFS_ITEM_TYPE_AES;
             }
-            assert(add_item(vfs_root, vfs_name[vfs_index]));
+
+            assert(add_item(vpfs.root, vpfs.name[item_index]));
+
+            vpfs.item[item_index].offset = data_offset;
+            vpfs.item[item_index].size = data_size;
+            vpfs.item[item_index].pkg_index = pkg_index;
         }
 
-//        sys_output("[%u/%u] %s\n", vfs_index + 1, item_count, vfs_name[vfs_index]);
+//        sys_printf("[%u/%u] %s\n", vfs_index + 1, item_count, vfs_name[vfs_index]);
 
-        vfs_item[vfs_index].pkg_index = 0;
-        vfs_item[vfs_index].offset = data_offset;
-        vfs_item[vfs_index].size = data_size;
-        vfs_index++;
+        vpfs.item[item_index].pkg_index = pkg_index;
+        vpfs.item[item_index].offset = data_offset;
+        vpfs.item[item_index].size = data_size;
     }
-//    vfs_header.nb_pkgs = 1;
-//    vfs_header.nb_items = vfs_index;
 
-    sys_output("[*] unpacking completed\n");
-
-    if (type == PKG_TYPE_VITA_APP || type == PKG_TYPE_VITA_DLC || type == PKG_TYPE_VITA_PATCH)
+    if (!sce_sys_package_created)
     {
-        // TODO: Add these paths/dirs to our items, with type VPFS_ITEM_TYPE_BIN
+        sys_printf("[*] creating sce_sys/package/\n");
+        vpfs.name[item_count] = strdup("sce_sys/package/");
+        assert(add_item(vpfs.root, vpfs.name[item_count]));
+        vpfs.item[item_count].flags = VPFS_ITEM_TYPE_DIR;
+        vpfs.item[item_count].pkg_index = -1;
+        item_count++;
+    }
 
-        if (!sce_sys_package_created)
-        {
-            sys_output("[*] creating sce_sys/package\n");
-            snprintf(path, sizeof(path), "%s/sce_sys/package/", root);
-//            out_add_folder(path);
-        }
+    sys_printf("[*] adding sce_sys/package/head.bin\n");
+    vpfs.name[item_count] = strdup("sce_sys/package/head.bin");
+    assert(add_item(vpfs.root, vpfs.name[item_count]));
+    vpfs.item[item_count].flags = VPFS_ITEM_TYPE_BIN;
+    vpfs.item[item_count].pkg_index = pkg_index;
+    vpfs.item[item_count].offset = 0;
+    vpfs.item[item_count].size = enc_offset + items_size;
+    item_count++;
 
-        sys_output("[*] creating sce_sys/package/head.bin\n");
-        snprintf(path, sizeof(path), "%s/sce_sys/package/head.bin", root);
+    sys_printf("[*] adding sce_sys/package/tail.bin\n");
+    vpfs.name[item_count] = strdup("sce_sys/package/tail.bin");
+    assert(add_item(vpfs.root, vpfs.name[item_count]));
+    vpfs.item[item_count].flags = VPFS_ITEM_TYPE_BIN;
+    vpfs.item[item_count].pkg_index = pkg_index;
+    vpfs.item[item_count].offset = enc_offset + enc_size;
+    vpfs.item[item_count].size = pkg_size - vpfs.item[item_count].offset;
+    item_count++;
 
-//        out_begin_file(path, 0);
-        uint64_t head_size = enc_offset + items_size;
-        uint64_t head_offset = 0;
-        while (head_size != 0)
-        {
-            uint8_t PKG_ALIGN(16) buffer[1 << 16];
-            uint32_t size = (uint32_t)min64(head_size, sizeof(buffer));
-            sys_read(pkg, head_offset, buffer, size);
-//            out_write(buffer, size);
-            head_size -= size;
-            head_offset += size;
-        }
-//        out_end_file();
-
-        sys_output("[*] creating sce_sys/package/tail.bin\n");
-        snprintf(path, sizeof(path), "%s/sce_sys/package/tail.bin", root);
-
-//        out_begin_file(path, 0);
-        uint64_t tail_offset = enc_offset + enc_size;
-        while (tail_offset != pkg_size)
-        {
-            uint8_t PKG_ALIGN(16) buffer[1 << 16];
-            uint32_t size = (uint32_t)min64(pkg_size - tail_offset, sizeof(buffer));
-            sys_read(pkg, tail_offset, buffer, size);
-//            out_write(buffer, size);
-            tail_offset += size;
-        }
-//        out_end_file();
-
-        sys_output("[*] creating sce_sys/package/stat.bin\n");
-        snprintf(path, sizeof(path), "%s/sce_sys/package/stat.bin", root);
+    sys_printf("[*] adding sce_sys/package/stat.bin\n");
+    vpfs.name[item_count] = strdup("sce_sys/package/stat.bin");
+    assert(add_item(vpfs.root, vpfs.name[item_count]));
+    vpfs.item[item_count].flags = VPFS_ITEM_TYPE_BIN;
+    vpfs.item[item_count].pkg_index = pkg_index;
+    // TODO: Once .vpkg creation is set add 768 zeroed bytes and point sce_sys/package/stat.bin to it
+    vpfs.item[item_count].offset = ~0;
+    vpfs.item[item_count].size = 768;
+    item_count++;
 
 //        uint8_t stat[768] = { 0 };
 //        out_begin_file(path, 0);
 //        out_write(stat, sizeof(stat));
 //        out_end_file();
-    }
 
-//    out_end();
+    vpfs.header.nb_items = item_count;
 
     if (type == PKG_TYPE_VITA_APP || type == PKG_TYPE_VITA_PATCH)
     {
-        sys_output("[*] minimum fw version required: %s\n", min_version);
+        sys_printf("[*] minimum fw version required: %s\n", min_version);
     }
 
-    sys_output("[DIRECTORY LISTING]\n");
-    display_fs(vfs_root);
-    direntry_destroy(vfs_root);
-    free(vfs_root);
-    free(vfs_item);
+    sys_printf("DIRECTORY LIST:\n");
+    display_fs(vpfs.root);
+    vpfs_free(&vpfs);
 
-    for (uint32_t i = 0; i < item_count; i++)
-    {
-        free(vfs_name[i]);
-    }
-    free(vfs_name);
-
-    sys_output("[*] done!\n");
+    sys_printf("[*] done!\n");
     sys_output_done();
 
 #ifdef _CRTDBG_MAP_ALLOC

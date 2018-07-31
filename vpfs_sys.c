@@ -49,7 +49,7 @@ void sys_output_done(void)
     SetConsoleOutputCP(gOldCP);
 }
 
-void sys_output(const char* msg, ...)
+void sys_printf(const char* msg, ...)
 {
     char buffer[1024];
 
@@ -200,7 +200,7 @@ void sys_output_done(void)
 {
 }
 
-void sys_output(const char* msg, ...)
+void sys_printf(const char* msg, ...)
 {
     va_list arg;
     va_start(arg, msg);
@@ -358,7 +358,7 @@ void sys_output_progress(uint64_t progress)
     uint32_t now = (uint32_t)(progress * 100 / out_size);
     if (now >= out_next)
     {
-        sys_output("[*] unpacking... %u%%\r", now);
+        sys_printf("[*] unpacking... %u%%\r", now);
         out_next = now + 1;
     }
 }

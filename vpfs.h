@@ -91,16 +91,16 @@ typedef struct {
 
 // TODO: for sceIoStat, return the date of the pkg
 typedef struct {
-    uint64_t    xsha[4];        // Last 32-bytes of the SHA-1
     uint32_t    type;
     uint32_t    flags;
-    char        content_id[36]; // Not NUL terminated!
+    char        content_id[40];
     char        path[256];
-    uint8_t     aes_key[0x10];
-    uint8_t     aes_iv[0x10];
+    uint8_t     aes_key[16];
+    uint8_t     aes_iv[16];
 } vpfs_pkg;
 
 typedef struct {
+    uint64_t    xsha[4];    // Last 32-bytes of the SHA-1
     uint32_t    flags;
     int32_t     pkg_index;  // < 0 if the offset is in this file, > 0  if in designated external PKG
     uint64_t    offset;     // For directories, offset is to string list in VPDB
@@ -136,3 +136,13 @@ typedef struct dir_entry {
 } dir_entry;
 
 #define DIRENTRY_INITIAL_CHILDREN_SIZE  4
+#define NUM_EXTRA_ITEMS                 4
+
+typedef struct {
+    vpfs_header header;
+    vpfs_pkg*   pkg;
+    uint64_t*   sha;
+    char**      name;
+    vpfs_item*  item;
+    dir_entry*  root;
+} vpfs_t;
