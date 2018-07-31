@@ -19,6 +19,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /*
   vpfs is a READ-ONLY file system aimed at accessing packages (mostly Sony PKGs

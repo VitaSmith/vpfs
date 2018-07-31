@@ -17,7 +17,7 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "vpfs_aes.h"
+#include "vpfs_crypt.h"
 
 #include <string.h>
 #include <wmmintrin.h> // AESNI

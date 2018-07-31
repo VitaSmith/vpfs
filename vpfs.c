@@ -22,14 +22,12 @@
 #include <crtdbg.h>
 #endif
 
-#include "vpfs_aes.h"
 #include "vpfs_utils.h"
 #include "vpfs_sys.h"
+#include "vpfs_crypt.h"
 
 #undef NDEBUG
 #include <assert.h>
-#include <stdint.h>
-#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

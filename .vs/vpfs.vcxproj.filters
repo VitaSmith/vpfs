@@ -9,30 +9,33 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="../vpfs.c">
+    <ClCompile Include="..\vpfs.c">
       <Filter>Source files</Filter>
     </ClCompile>
-    <ClCompile Include="../vpfs_sys.c">
+    <ClCompile Include="..\vpfs_sys.c">
       <Filter>Source files</Filter>
     </ClCompile>
-    <ClCompile Include="../vpfs_aes.c">
+    <ClCompile Include="..\vpfs_aes.c">
       <Filter>Source files</Filter>
     </ClCompile>
-    <ClCompile Include="../vpfs_aes_x86.c">
+    <ClCompile Include="..\vpfs_aes_x86.c">
+      <Filter>Source files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\vpfs_sha.c">
       <Filter>Source files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="../vpfs.h">
+    <ClInclude Include="..\vpfs.h">
       <Filter>Header files</Filter>
     </ClInclude>
-    <ClInclude Include="../vpfs_sys.h">
+    <ClInclude Include="..\vpfs_sys.h">
       <Filter>Header files</Filter>
     </ClInclude>
-    <ClInclude Include="../vpfs_utils.h">
+    <ClInclude Include="..\vpfs_utils.h">
       <Filter>Header files</Filter>
     </ClInclude>
-    <ClInclude Include="../vpfs_aes.h">
+    <ClInclude Include="..\vpfs_crypt.h">
       <Filter>Header files</Filter>
     </ClInclude>
   </ItemGroup>

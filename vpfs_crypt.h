@@ -36,3 +36,5 @@ void aes128_ctr_xor(const aes128_key* ctx, const uint8_t* iv, uint64_t block, ui
 void aes128_cmac(const uint8_t* key, const uint8_t* buffer, uint32_t size, uint8_t* mac);
 
 void aes128_psp_decrypt(const aes128_key* ctx, const uint8_t* iv, uint32_t index, uint8_t* buffer, uint32_t size);
+
+bool sha1sum(const uint8_t* buf, const size_t len, uint8_t* sum);

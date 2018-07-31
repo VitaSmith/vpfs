@@ -17,8 +17,8 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "vpfs_aes.h"
 #include "vpfs_utils.h"
+#include "vpfs_crypt.h"
 
 #undef NDEBUG
 #include <assert.h>

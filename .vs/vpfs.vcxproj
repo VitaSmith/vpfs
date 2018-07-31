@@ -111,16 +111,17 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="../vpfs.c" />
-    <ClCompile Include="../vpfs_aes.c" />
-    <ClCompile Include="../vpfs_aes_x86.c" />
-    <ClCompile Include="../vpfs_sys.c" />
+    <ClCompile Include="..\vpfs.c" />
+    <ClCompile Include="..\vpfs_aes.c" />
+    <ClCompile Include="..\vpfs_aes_x86.c" />
+    <ClCompile Include="..\vpfs_sys.c" />
+    <ClCompile Include="..\vpfs_sha.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="../vpfs.h" />
-    <ClInclude Include="../vpfs_aes.h" />
-    <ClInclude Include="../vpfs_sys.h" />
-    <ClInclude Include="../vpfs_utils.h" />
+    <ClInclude Include="..\vpfs.h" />
+    <ClInclude Include="..\vpfs_crypt.h" />
+    <ClInclude Include="..\vpfs_sys.h" />
+    <ClInclude Include="..\vpfs_utils.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
