@@ -1,5 +1,5 @@
 /*
-  VPDB - Vita PKG database creator
+  VPFS - Vita PKG File System
   Copyright © 2018 VitaSmith
   Copyright © 2017-2018 Martins Mozeiko
 
@@ -19,7 +19,7 @@
 
 #pragma once
 
-#include "vpdb_utils.h"
+#include "vpfs_utils.h"
 
 // correctly outputs utf8 string
 void sys_output_init(void);

@@ -37,9 +37,9 @@
   VPFS structure:
     vpfs_header;
     vdfs_pkg[nb_pkgs];
-    uint64_t sha1[nb_items][5]
-    vpfs_item[nb_items];
-    char dir_list[]; // concatenation of NUL terminated UTF-8 strings, grouped by directory
+    uint64_t sha[nb_items]; // first 64-bits of the SHA-1 for the path (the remainder of the SHA-1
+    vpfs_item[nb_items];    // is in the xsha[] array from the relevant vpfs_item)
+    char dir_list[];        // concatenation of NUL terminated UTF-8 strings, grouped by directory
     uint8_t additional_local_data[] (work.bin, modded files, etc)
 
   pkg_table_offset = sizeof(vpfs_header);
@@ -90,9 +90,10 @@ typedef struct {
 
 // TODO: for sceIoStat, return the date of the pkg
 typedef struct {
+    uint64_t    xsha[4];        // Last 32-bytes of the SHA-1
     uint32_t    type;
     uint32_t    flags;
-    char        content_id[36]; // not NUL terminated!
+    char        content_id[36]; // Not NUL terminated!
     char        path[256];
     uint8_t     aes_key[0x10];
     uint8_t     aes_iv[0x10];

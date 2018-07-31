@@ -1,5 +1,5 @@
 /*
-  VPDB - Vita PKG database creator
+  VPFS - Vita PKG File System
   Copyright © 2018 VitaSmith
   Copyright © 2017-2018 Martins Mozeiko
 

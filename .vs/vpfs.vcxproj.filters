@@ -1,0 +1,39 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source files">
+      <UniqueIdentifier>{e2ef0927-26ae-41ae-b116-7d30356fc5ce}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header files">
+      <UniqueIdentifier>{1853aaeb-ba7b-46dc-b026-e3dc907666ec}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="../vpfs.c">
+      <Filter>Source files</Filter>
+    </ClCompile>
+    <ClCompile Include="../vpfs_sys.c">
+      <Filter>Source files</Filter>
+    </ClCompile>
+    <ClCompile Include="../vpfs_aes.c">
+      <Filter>Source files</Filter>
+    </ClCompile>
+    <ClCompile Include="../vpfs_aes_x86.c">
+      <Filter>Source files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="../vpfs.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
+    <ClInclude Include="../vpfs_sys.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
+    <ClInclude Include="../vpfs_utils.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
+    <ClInclude Include="../vpfs_aes.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

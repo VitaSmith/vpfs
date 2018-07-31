@@ -21,7 +21,7 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{2267C6E1-BCA1-4F9F-8FCA-1CE64FF90743}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
-    <RootNamespace>vpdb</RootNamespace>
+    <RootNamespace>vpfs</RootNamespace>
     <WindowsTargetPlatformVersion>8.1</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -111,16 +111,16 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="vpdb.c" />
-    <ClCompile Include="vpdb_aes.c" />
-    <ClCompile Include="vpdb_aes_x86.c" />
-    <ClCompile Include="vpdb_sys.c" />
+    <ClCompile Include="../vpfs.c" />
+    <ClCompile Include="../vpfs_aes.c" />
+    <ClCompile Include="../vpfs_aes_x86.c" />
+    <ClCompile Include="../vpfs_sys.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="vpdb.h" />
-    <ClInclude Include="vpdb_aes.h" />
-    <ClInclude Include="vpdb_sys.h" />
-    <ClInclude Include="vpdb_utils.h" />
+    <ClInclude Include="../vpfs.h" />
+    <ClInclude Include="../vpfs_aes.h" />
+    <ClInclude Include="../vpfs_sys.h" />
+    <ClInclude Include="../vpfs_utils.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

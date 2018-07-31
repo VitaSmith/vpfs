@@ -1,5 +1,5 @@
 /*
-  VPDB - Vita PKG database creator
+  VPFS - Vita PKG File System
   Copyright © 2018 VitaSmith
   Copyright © 2017-2018 Martins Mozeiko
 
@@ -22,10 +22,11 @@
 #include <crtdbg.h>
 #endif
 
-#include "vpdb_aes.h"
-#include "vpdb_utils.h"
-#include "vpdb_sys.h"
+#include "vpfs_aes.h"
+#include "vpfs_utils.h"
+#include "vpfs_sys.h"
 
+#undef NDEBUG
 #include <assert.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -33,7 +34,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#include "vpdb.h"
+#include "vpfs.h"
 
 #ifdef __GNUC__
 #pragma GCC diagnostic ignored "-Wpragmas"
@@ -399,7 +400,7 @@ int main(int argc, char* argv[])
         sys_error("ERROR: pkg file is too small\n");
     }
 
-    vpfs_header vfs_header = { VPFS_MAGIC, VPFS_VERSION, 0, 0 };
+//    vpfs_header vfs_header = { VPFS_MAGIC, VPFS_VERSION, 0, 0 };
     vpfs_pkg vfs_pkg = { 0 };
     char** vfs_name = calloc(item_count, sizeof(char*));
     vpfs_item* vfs_item = calloc(item_count, sizeof(vpfs_item));
@@ -522,7 +523,7 @@ int main(int argc, char* argv[])
     // TODO: copy content_id?
     snprintf(vfs_pkg.path, sizeof(vfs_pkg.path), "ux0:pkg/%s", pkg_arg);
     memcpy(vfs_pkg.aes_key, main_key, sizeof(main_key));
-    memcpy(vfs_pkg.aes_iv, iv, sizeof(iv));
+    memcpy(vfs_pkg.aes_iv, iv, 16);
 
 //     out_begin(root, zipped);
     root[0] = 0;
@@ -604,7 +605,7 @@ int main(int argc, char* argv[])
                 vfs_name[vfs_index][name_size++] = '/';
                 vfs_name[vfs_index][name_size] = 0;
             }
-            assert(add_item(vfs_root, vfs_name[vfs_index]) == true);
+            assert(add_item(vfs_root, vfs_name[vfs_index]));
         }
         else
         {
@@ -617,7 +618,7 @@ int main(int argc, char* argv[])
             {
                 vfs_item[vfs_index].flags = VPFS_ITEM_TYPE_AES;
             }
-            assert(add_item(vfs_root, vfs_name[vfs_index]) == true);
+            assert(add_item(vfs_root, vfs_name[vfs_index]));
         }
 
 //        sys_output("[%u/%u] %s\n", vfs_index + 1, item_count, vfs_name[vfs_index]);
@@ -627,8 +628,8 @@ int main(int argc, char* argv[])
         vfs_item[vfs_index].size = data_size;
         vfs_index++;
     }
-    vfs_header.nb_pkgs = 1;
-    vfs_header.nb_items = vfs_index;
+//    vfs_header.nb_pkgs = 1;
+//    vfs_header.nb_items = vfs_index;
 
     sys_output("[*] unpacking completed\n");
 
@@ -639,7 +640,7 @@ int main(int argc, char* argv[])
         if (!sce_sys_package_created)
         {
             sys_output("[*] creating sce_sys/package\n");
-            snprintf(path, sizeof(path), "%s/sce_sys/package", root);
+            snprintf(path, sizeof(path), "%s/sce_sys/package/", root);
 //            out_add_folder(path);
         }
 

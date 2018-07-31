@@ -1,5 +1,5 @@
 /*
-  VPDB - Vita PKG database creator
+  VPFS - Vita PKG File System
   Copyright © 2018 VitaSmith
   Copyright © 2017-2018 Martins Mozeiko
 
@@ -17,8 +17,8 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "vpdb_sys.h"
-#include "vpdb_utils.h"
+#include "vpfs_sys.h"
+#include "vpfs_utils.h"
 
 #include <stdlib.h>
 #include <stdio.h>

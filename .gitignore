@@ -7,11 +7,11 @@
 *.obj
 *.pkg
 *.sfo
+*.vcxproj.filters
 *.vcxproj.user
 *.velf
 *.vpk
 *.zip
-.vs
 Win32
 Win64
-vpdb
+vpfs

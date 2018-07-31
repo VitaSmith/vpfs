@@ -4,8 +4,8 @@ else
   EXE :=
 endif
 
-BIN=vpdb${EXE}
-SRC=${wildcard vpdb*.c}
+BIN=vpfs${EXE}
+SRC=${wildcard vpfs*.c}
 OBJ=${SRC:.c=.o}
 DEP=${SRC:.c=.d}
 
