@@ -36,17 +36,17 @@
 
 /*
   VPFS structure:
-    vpfs_header;
+    vpfs_header_t;
     vdfs_pkg[nb_pkgs];
     uint32_t sha[nb_items]; // first 32-bits of the SHA-1 for the path (the remainder of the SHA-1
-    vpfs_item[nb_items];    // is in the xsha[] array from the relevant vpfs_item)
+    vpfs_item_t[nb_items];    // is in the xsha[] array from the relevant vpfs_item_t)
     char dir_list[];        // concatenation of NUL terminated UTF-8 strings, grouped by directory
     uint8_t additional_local_data[] (work.bin, modded files, etc)
 
-  pkg_table_offset = sizeof(vpfs_header);
-  sha_table_offset = pkg_table_offset + nb_pkgs * sizeof(vpfs_pkg);
+  pkg_table_offset = sizeof(vpfs_header_t);
+  sha_table_offset = pkg_table_offset + nb_pkgs * sizeof(vpfs_pkg_t);
   item_table_offset = sha_table_offset + nb_items * sizeof(uint32_t);
-  dir_list_offset = item_table_offset + nb_items * sizeof(vpfs_item);
+  dir_list_offset = item_table_offset + nb_items * sizeof(vpfs_item_t);
 
   Lookups:
   - root path ("ux0:/app/TITLE_ID/") must match the vpfs path ("ux0:/app/TITLE_ID.vpfs")
@@ -87,7 +87,7 @@ typedef struct {
     uint32_t    version;
     uint32_t    nb_pkgs;
     uint32_t    nb_items;
-} vpfs_header;
+} vpfs_header_t;
 
 // TODO: for sceIoStat, return the date of the pkg
 typedef struct {
@@ -97,7 +97,7 @@ typedef struct {
     char        path[256];
     uint8_t     aes_key[16];
     uint8_t     aes_iv[16];
-} vpfs_pkg;
+} vpfs_pkg_t;
 
 typedef struct {
     uint32_t    xsha[4];    // Last 16-bytes of the SHA-1
@@ -108,7 +108,7 @@ typedef struct {
     uint64_t    size;       // For directories, this is the size of all the NUL terminated
                             // strings that are contained in the directory
                             // For regular files, this is the size of the source item in the PKG
-} vpfs_item;
+} vpfs_item_t;
 
 
 #define VPFS_MAGIC              0x56504653  // 'VPFS'
@@ -128,22 +128,31 @@ typedef struct {
 #define VPFS_ITEM_OVERRIDDEN    0x40000000  // If overriden from patch or DLC. Probably not needed.
 
 // Internal structures for directory listing
-typedef struct dir_entry {
+typedef struct dir_entry_t {
     const char* path;
-    struct dir_entry* children;
+    struct dir_entry_t* children;
     size_t index;                 // Current array size
     size_t max;                   // Maximum array size
-} dir_entry;
+} dir_entry_t;
+
+typedef struct {
+    uint32_t        nb_dirs;
+    uint32_t        dir_index;
+    uint32_t        buf_len;
+    uint32_t        buf_offset;
+    char**          dir;
+    char*           buf;
+} dir_dump_t;
 
 #define DIRENTRY_INITIAL_CHILDREN_SIZE  4
 #define NUM_EXTRA_ITEMS                 4
 
 typedef struct {
-    uint32_t    index;
-    vpfs_header header;
-    vpfs_pkg*   pkg;
-    uint32_t*   sha;
-    char**      name;
-    vpfs_item*  item;
-    dir_entry*  root;
+    uint32_t        index;
+    vpfs_header_t   header;
+    vpfs_pkg_t*     pkg;
+    uint64_t*       sha;
+    char**          name;
+    vpfs_item_t*    item;
+    dir_entry_t*    root;
 } vpfs_t;
