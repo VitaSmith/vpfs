@@ -352,15 +352,22 @@ void direntry_dump_init(dir_dump_t* dump, dir_entry_t* entry)
 
 void direntry_dump(dir_dump_t* dump, dir_entry_t* entry)
 {
+    bool is_dir = (entry->path[strlen(entry->path) - 1] == '/');
+    if (is_dir)
+    {
+        dump->dir[dump->dir_index].offset = dump->buf_offset;
+    }
     for (size_t i = 0; i < entry->index; i++)
     {
         strcpy(&dump->buf[dump->buf_offset], entry->children[i].path);
         dump->buf_offset += (uint32_t)strlen(entry->children[i].path) + 1;
     }
-    if (entry->path[strlen(entry->path) - 1] == '/')
+    if (is_dir)
     {
-        dump->dir[dump->dir_index++] = (char*)entry->path;
+        dump->dir[dump->dir_index].path = (char*)entry->path;
         dump->buf_offset++; // Double NUL terminator
+        dump->dir[dump->dir_index].size = dump->buf_offset - dump->dir[dump->dir_index].offset;
+        dump->dir_index++;
     }
     for (size_t i = 0; i < entry->index; i++)
     {
@@ -400,6 +407,8 @@ void vpfs_free(vpfs_t *vpfs)
     free(vpfs->item);
     free(vpfs->name);
     free(vpfs->sha);
+    free(vpfs->sorted_sha);
+    free(vpfs->data);
 }
 
 // NB: This does not check if an item with the same path already exists
@@ -438,6 +447,33 @@ static bool vpfs_add(vpfs_t* vpfs, vpfs_item_t* item, char* path)
 
     vpfs->name[vpfs->index++] = path;
     return true;
+}
+
+vpfs_item_t* vpfs_find_item(vpfs_t* vpfs, char* path)
+{
+    assert(path != NULL);
+    uint8_t sha[20];
+
+    sha1sum((uint8_t*)path, strlen(path), sha);
+    uint32_t i, sha_head = get32be(sha);
+
+    // TODO: dichotomial lookup
+    for (i = 0; i < vpfs->header.nb_items; i++)
+    {
+        if (sha_head == vpfs->sorted_sha[i])
+        {
+            // sha_head is not guaranteed to be unique so make sure the full SHA-1 matches
+            if (memcmp(&sha[4], vpfs->item[i].xsha, 16) == 0)
+            {
+                break;
+            }
+        }
+    }
+    if (i >= vpfs->header.nb_items)
+    {
+        sys_error("Directory entry for %s is missing\n", path);
+    }
+    return &vpfs->item[i];
 }
 
 // https://en.wikibooks.org/wiki/Algorithm_Implementation/Sorting/Quicksort#Iterative_Quicksort
@@ -485,7 +521,7 @@ int main(int argc, char* argv[])
     sys_output_init();
     const char* pkg_arg = NULL;
 
-    sys_printf("vpfs v0.6\n");
+    sys_printf("vpfs v0.8\n");
 
     if (argc != 2)
     {
@@ -677,7 +713,7 @@ int main(int argc, char* argv[])
                 strcmp(name, "sce_sys/package/digs.bin") == 0)
             {
                 free(name);
-                name = _strdup("sce_sys/package/body.bin");
+                name = strdup("sce_sys/package/body.bin");
                 vpfs_item.flags = VPFS_ITEM_TYPE_BIN;
             }
             else
@@ -720,47 +756,56 @@ int main(int argc, char* argv[])
     sys_printf("[*] adding sce_sys/package/stat.bin\n");
     name = strdup("sce_sys/package/stat.bin");
     vpfs_item.flags = VPFS_ITEM_TYPE_BIN;
-    vpfs_item.pkg_index = pkg_index;
-    // TODO: Once .vpkg creation is set add 768 zeroed bytes and point sce_sys/package/stat.bin to it
+    vpfs_item.pkg_index = -1;   // Local item
     vpfs_item.offset = ~0;
     vpfs_item.size = 768;
+    vpfs.data_len = (uint32_t)vpfs_item.size;
+    vpfs.data = calloc(vpfs.data_len, 1);
+    assert(vpfs.data != NULL);
     assert(vpfs_add(&vpfs, &vpfs_item, name));
 
-//        uint8_t stat[768] = { 0 };
-//        out_begin_file(path, 0);
-//        out_write(stat, sizeof(stat));
-//        out_end_file();
-
     vpfs.header.nb_items = vpfs.index;
+    vpfs.header.local_data = sizeof(vpfs_header_t) + sizeof(vpfs_pkg_t) * vpfs.header.nb_pkgs +
+        (sizeof(uint32_t) + sizeof(vpfs_item_t)) * vpfs.header.nb_items;
 
-    if (type == PKG_TYPE_VITA_APP || type == PKG_TYPE_VITA_PATCH)
-    {
-        sys_printf("[*] minimum fw version required: %s\n", min_version);
-    }
-
-    // Sort all items according to the first 32-bits of the SHA-1
+    // Sort items according to the first 32-bits of the SHA-1
     sys_printf("[*] sorting entries...\n");
     quicksort(vpfs.sha, vpfs.header.nb_items);
-    uint32_t *sorted_sha = calloc(vpfs.header.nb_items, sizeof(uint32_t));
-    assert(sorted_sha != NULL);
+    vpfs.sorted_sha = calloc(vpfs.header.nb_items, sizeof(uint32_t));
+    assert(vpfs.sorted_sha != NULL);
     vpfs_item_t *sorted_item = calloc(vpfs.header.nb_items, sizeof(vpfs_item_t));
     assert(sorted_item != NULL);
     for (uint32_t i = 0; i < vpfs.header.nb_items; i++)
     {
-        sorted_sha[i] = (uint32_t)vpfs.sha[i];
+        vpfs.sorted_sha[i] = (uint32_t)vpfs.sha[i];
         memcpy(&sorted_item[i], &vpfs.item[vpfs.sha[i] >> 32], sizeof(vpfs_item_t));
     }
+    free(vpfs.item);
+    vpfs.item = sorted_item;
 
     // Create the directory listings
+    sys_printf("[*] adding local data...\n");
     dir_dump_t dir_dump = { 0 };
     direntry_dump_init(&dir_dump, vpfs.root);
-    dir_dump.dir = calloc(dir_dump.nb_dirs, sizeof(char*));
+    dir_dump.dir = calloc(dir_dump.nb_dirs, sizeof(dir_record_t));
     assert(dir_dump.dir != NULL);
     dir_dump.buf = calloc(dir_dump.buf_len, 1);
     assert(dir_dump.buf != NULL);
     direntry_dump(&dir_dump, vpfs.root);
 
-    // TODO: Link each directory list to the relevant directory item
+    // Start at 1, since there's no item for root listing
+    for (uint32_t i = 1; i < dir_dump.nb_dirs; i++)
+    {
+        vpfs_item_t* item = vpfs_find_item(&vpfs, dir_dump.dir[i].path);
+        assert(item->flags & VPFS_ITEM_TYPE_DIR);
+        item->offset = dir_dump.dir[i].offset;
+        item->size = dir_dump.dir[i].size;
+    }
+
+    // Set the offset of stat.bin, also in local_data
+    vpfs_item_t* item = vpfs_find_item(&vpfs, "sce_sys/package/stat.bin");
+    assert(item != NULL);
+    item->offset = dir_dump.buf_len;
 
     char path[1024];
     if (base_name != 0)
@@ -777,21 +822,17 @@ int main(int argc, char* argv[])
     offset += sizeof(vpfs_header_t);
     sys_write(fd, offset, vpfs.pkg, sizeof(vpfs_pkg_t) * vpfs.header.nb_pkgs);
     offset += sizeof(vpfs_pkg_t) * vpfs.header.nb_pkgs;
-    sys_write(fd, offset, sorted_sha, sizeof(uint32_t) * vpfs.header.nb_items);
+    sys_write(fd, offset, vpfs.sorted_sha, sizeof(uint32_t) * vpfs.header.nb_items);
     offset += sizeof(uint32_t) * vpfs.header.nb_items;
-    sys_write(fd, offset, sorted_item, sizeof(vpfs_item_t) * vpfs.header.nb_items);
+    sys_write(fd, offset, vpfs.item, sizeof(vpfs_item_t) * vpfs.header.nb_items);
     offset += sizeof(vpfs_item_t) * vpfs.header.nb_items;
     sys_write(fd, offset, dir_dump.buf, dir_dump.buf_len);
     offset += dir_dump.buf_len;
-    // TODO: add extra items
+    sys_write(fd, offset, vpfs.data, vpfs.data_len);
     sys_close(fd);
 
-    free(sorted_sha);
-    free(sorted_item);
     free(dir_dump.dir);
     free(dir_dump.buf);
-    //sys_printf("DIRECTORY LIST:\n");
-    //direntry_print(vpfs.root);
     vpfs_free(&vpfs);
 
     sys_printf("[*] done!\n");

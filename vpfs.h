@@ -87,6 +87,7 @@ typedef struct {
     uint32_t    version;
     uint32_t    nb_pkgs;
     uint32_t    nb_items;
+    uint32_t    local_data;
 } vpfs_header_t;
 
 // TODO: for sceIoStat, return the date of the pkg
@@ -102,11 +103,11 @@ typedef struct {
 typedef struct {
     uint32_t    xsha[4];    // Last 16-bytes of the SHA-1
     uint32_t    flags;
-    int32_t     pkg_index;  // < 0 if the offset is in this file, > 0  if in designated external PKG
-    uint64_t    offset;     // For directories, offset is to string list in VPDB
+    int32_t     pkg_index;  // < 0 if the offset is in this file (local_data), > 0  if in designated external PKG
+    uint64_t    offset;     // For directories, offset is with regards to 'local data' start.
                             // For regular files, offset is the offset in the referenced PKG
     uint64_t    size;       // For directories, this is the size of all the NUL terminated
-                            // strings that are contained in the directory
+                            // paths that are contained in the directory
                             // For regular files, this is the size of the source item in the PKG
 } vpfs_item_t;
 
@@ -136,11 +137,17 @@ typedef struct dir_entry_t {
 } dir_entry_t;
 
 typedef struct {
+    char*           path;
+    uint32_t        offset;
+    uint32_t        size;
+} dir_record_t;
+
+typedef struct {
     uint32_t        nb_dirs;
     uint32_t        dir_index;
     uint32_t        buf_len;
     uint32_t        buf_offset;
-    char**          dir;
+    dir_record_t*   dir;
     char*           buf;
 } dir_dump_t;
 
@@ -152,7 +159,10 @@ typedef struct {
     vpfs_header_t   header;
     vpfs_pkg_t*     pkg;
     uint64_t*       sha;
+    uint32_t*       sorted_sha;
     char**          name;
     vpfs_item_t*    item;
     dir_entry_t*    root;
+    uint8_t*        data;       // buffer for extra data
+    uint32_t        data_len;
 } vpfs_t;
