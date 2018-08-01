@@ -223,14 +223,14 @@ static void sha1_final(sha1_context *ctx)
         ctx->buf[pos++] = 0;
     }
 
-    ctx->buf[63] = (unsigned char)bitcount;
-    ctx->buf[62] = (unsigned char)(bitcount >> 8);
-    ctx->buf[61] = (unsigned char)(bitcount >> 16);
-    ctx->buf[60] = (unsigned char)(bitcount >> 24);
-    ctx->buf[59] = (unsigned char)(bitcount >> 32);
-    ctx->buf[58] = (unsigned char)(bitcount >> 40);
-    ctx->buf[57] = (unsigned char)(bitcount >> 48);
-    ctx->buf[56] = (unsigned char)(bitcount >> 56);
+    ctx->buf[63] = (uint8_t)bitcount;
+    ctx->buf[62] = (uint8_t)(bitcount >> 8);
+    ctx->buf[61] = (uint8_t)(bitcount >> 16);
+    ctx->buf[60] = (uint8_t)(bitcount >> 24);
+    ctx->buf[59] = (uint8_t)(bitcount >> 32);
+    ctx->buf[58] = (uint8_t)(bitcount >> 40);
+    ctx->buf[57] = (uint8_t)(bitcount >> 48);
+    ctx->buf[56] = (uint8_t)(bitcount >> 56);
 
     sha1_transform(ctx, ctx->buf);
 

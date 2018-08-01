@@ -38,15 +38,15 @@
   VPFS structure:
     vpfs_header;
     vdfs_pkg[nb_pkgs];
-    uint64_t sha[nb_items]; // first 64-bits of the SHA-1 for the path (the remainder of the SHA-1
+    uint32_t sha[nb_items]; // first 32-bits of the SHA-1 for the path (the remainder of the SHA-1
     vpfs_item[nb_items];    // is in the xsha[] array from the relevant vpfs_item)
     char dir_list[];        // concatenation of NUL terminated UTF-8 strings, grouped by directory
     uint8_t additional_local_data[] (work.bin, modded files, etc)
 
   pkg_table_offset = sizeof(vpfs_header);
   sha_table_offset = pkg_table_offset + nb_pkgs * sizeof(vpfs_pkg);
-  item_table_offset = path_table_offset + nb_items * 40;
-  item_names_offset = item_table_offset + nb_items * sizeof(vpfs_item);
+  item_table_offset = sha_table_offset + nb_items * sizeof(uint32_t);
+  dir_list_offset = item_table_offset + nb_items * sizeof(vpfs_item);
 
   Lookups:
   - root path ("ux0:/app/TITLE_ID/") must match the vpfs path ("ux0:/app/TITLE_ID.vpfs")
@@ -100,7 +100,7 @@ typedef struct {
 } vpfs_pkg;
 
 typedef struct {
-    uint64_t    xsha[4];    // Last 32-bytes of the SHA-1
+    uint32_t    xsha[4];    // Last 16-bytes of the SHA-1
     uint32_t    flags;
     int32_t     pkg_index;  // < 0 if the offset is in this file, > 0  if in designated external PKG
     uint64_t    offset;     // For directories, offset is to string list in VPDB
@@ -139,9 +139,10 @@ typedef struct dir_entry {
 #define NUM_EXTRA_ITEMS                 4
 
 typedef struct {
+    uint32_t    index;
     vpfs_header header;
     vpfs_pkg*   pkg;
-    uint64_t*   sha;
+    uint32_t*   sha;
     char**      name;
     vpfs_item*  item;
     dir_entry*  root;

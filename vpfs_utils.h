@@ -85,54 +85,54 @@ static inline uint64_t get64be(const uint8_t* bytes)
         | ((uint64_t)bytes[0] << 56);
 }
 
-static inline void set16le(uint8_t* bytes, uint16_t x)
+static inline void set16le(void* bytes, uint16_t x)
 {
-    bytes[0] = (uint8_t)x;
-    bytes[1] = (uint8_t)(x >> 8);
+    ((uint8_t*)bytes)[0] = (uint8_t)x;
+    ((uint8_t*)bytes)[1] = (uint8_t)(x >> 8);
 }
 
-static inline void set32le(uint8_t* bytes, uint32_t x)
+static inline void set32le(void* bytes, uint32_t x)
 {
-    bytes[0] = (uint8_t)x;
-    bytes[1] = (uint8_t)(x >> 8);
-    bytes[2] = (uint8_t)(x >> 16);
-    bytes[3] = (uint8_t)(x >> 24);
+    ((uint8_t*)bytes)[0] = (uint8_t)x;
+    ((uint8_t*)bytes)[1] = (uint8_t)(x >> 8);
+    ((uint8_t*)bytes)[2] = (uint8_t)(x >> 16);
+    ((uint8_t*)bytes)[3] = (uint8_t)(x >> 24);
 }
 
-static inline void set64le(uint8_t* bytes, uint64_t x)
+static inline void set64le(void* bytes, uint64_t x)
 {
-    bytes[0] = (uint8_t)x;
-    bytes[1] = (uint8_t)(x >> 8);
-    bytes[2] = (uint8_t)(x >> 16);
-    bytes[3] = (uint8_t)(x >> 24);
-    bytes[4] = (uint8_t)(x >> 32);
-    bytes[5] = (uint8_t)(x >> 40);
-    bytes[6] = (uint8_t)(x >> 48);
-    bytes[7] = (uint8_t)(x >> 56);
+    ((uint8_t*)bytes)[0] = (uint8_t)x;
+    ((uint8_t*)bytes)[1] = (uint8_t)(x >> 8);
+    ((uint8_t*)bytes)[2] = (uint8_t)(x >> 16);
+    ((uint8_t*)bytes)[3] = (uint8_t)(x >> 24);
+    ((uint8_t*)bytes)[4] = (uint8_t)(x >> 32);
+    ((uint8_t*)bytes)[5] = (uint8_t)(x >> 40);
+    ((uint8_t*)bytes)[6] = (uint8_t)(x >> 48);
+    ((uint8_t*)bytes)[7] = (uint8_t)(x >> 56);
 }
 
-static inline void set16be(uint8_t* bytes, uint16_t x)
+static inline void set16be(void* bytes, uint16_t x)
 {
-    bytes[0] = (uint8_t)(x >> 8);
-    bytes[1] = (uint8_t)x;
+    ((uint8_t*)bytes)[0] = (uint8_t)(x >> 8);
+    ((uint8_t*)bytes)[1] = (uint8_t)x;
 }
 
-static inline void set32be(uint8_t* bytes, uint32_t x)
+static inline void set32be(void* bytes, uint32_t x)
 {
-    bytes[0] = (uint8_t)(x >> 24);
-    bytes[1] = (uint8_t)(x >> 16);
-    bytes[2] = (uint8_t)(x >> 8);
-    bytes[3] = (uint8_t)x;
+    ((uint8_t*)bytes)[0] = (uint8_t)(x >> 24);
+    ((uint8_t*)bytes)[1] = (uint8_t)(x >> 16);
+    ((uint8_t*)bytes)[2] = (uint8_t)(x >> 8);
+    ((uint8_t*)bytes)[3] = (uint8_t)x;
 }
 
-static inline void set64be(uint8_t* bytes, uint64_t x)
+static inline void set64be(void* bytes, uint64_t x)
 {
-    bytes[0] = (uint8_t)(x >> 56);
-    bytes[1] = (uint8_t)(x >> 48);
-    bytes[2] = (uint8_t)(x >> 40);
-    bytes[3] = (uint8_t)(x >> 32);
-    bytes[4] = (uint8_t)(x >> 24);
-    bytes[5] = (uint8_t)(x >> 16);
-    bytes[6] = (uint8_t)(x >> 8);
-    bytes[7] = (uint8_t)x;
+    ((uint8_t*)bytes)[0] = (uint8_t)(x >> 56);
+    ((uint8_t*)bytes)[1] = (uint8_t)(x >> 48);
+    ((uint8_t*)bytes)[2] = (uint8_t)(x >> 40);
+    ((uint8_t*)bytes)[3] = (uint8_t)(x >> 32);
+    ((uint8_t*)bytes)[4] = (uint8_t)(x >> 24);
+    ((uint8_t*)bytes)[5] = (uint8_t)(x >> 16);
+    ((uint8_t*)bytes)[6] = (uint8_t)(x >> 8);
+    ((uint8_t*)bytes)[7] = (uint8_t)x;
 }
