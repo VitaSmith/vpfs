@@ -111,13 +111,16 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\puff.c" />
     <ClCompile Include="..\vpfs.c" />
     <ClCompile Include="..\vpfs_aes.c" />
     <ClCompile Include="..\vpfs_aes_x86.c" />
     <ClCompile Include="..\vpfs_sys.c" />
     <ClCompile Include="..\vpfs_sha.c" />
+    <ClCompile Include="..\vpfs_zrif.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\puff.h" />
     <ClInclude Include="..\vpfs.h" />
     <ClInclude Include="..\vpfs_crypt.h" />
     <ClInclude Include="..\vpfs_sys.h" />

@@ -152,7 +152,7 @@ typedef struct {
 } dir_dump_t;
 
 #define DIRENTRY_INITIAL_CHILDREN_SIZE  4
-#define NUM_EXTRA_ITEMS                 4
+#define NUM_EXTRA_ITEMS                 5
 
 typedef struct {
     uint32_t        index;
@@ -165,4 +165,5 @@ typedef struct {
     dir_entry_t*    root;
     uint8_t*        data;       // buffer for extra data
     uint32_t        data_len;
+    uint32_t        data_max;
 } vpfs_t;

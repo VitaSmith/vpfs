@@ -38,3 +38,5 @@ void aes128_cmac(const uint8_t* key, const uint8_t* buffer, uint32_t size, uint8
 void aes128_psp_decrypt(const aes128_key* ctx, const uint8_t* iv, uint32_t index, uint8_t* buffer, uint32_t size);
 
 bool sha1sum(const uint8_t* buf, const size_t len, uint8_t* sum);
+
+size_t zrif_decode(const char* zrif, uint8_t* dst, const size_t dst_len);

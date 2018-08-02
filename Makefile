@@ -5,7 +5,7 @@ else
 endif
 
 BIN=vpfs${EXE}
-SRC=${wildcard vpfs*.c}
+SRC=${wildcard vpfs*.c puff.c}
 OBJ=${SRC:.c=.o}
 DEP=${SRC:.c=.d}
 

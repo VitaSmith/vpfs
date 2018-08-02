@@ -476,6 +476,33 @@ vpfs_item_t* vpfs_find_item(vpfs_t* vpfs, char* path)
     return &vpfs->item[i];
 }
 
+void vpfs_set_data(vpfs_t* vpfs, void* buf, uint32_t len)
+{
+    uint32_t req_size = vpfs->data_len + len;
+    if (req_size > vpfs->data_max)
+    {
+        vpfs->data_max = ((req_size + 1023) / 1024) * 1024;
+        if (vpfs->data == NULL)
+        {
+            vpfs->data = malloc(vpfs->data_max);
+            if (vpfs->data == NULL)
+            {
+                sys_error("Could not allocate data buffer\n");
+            }
+        }
+        else
+        {
+            vpfs->data = realloc(vpfs->data, vpfs->data_max);
+            if (vpfs->data == NULL)
+            {
+                sys_error("Could not reallocate data buffer\n");
+            }
+        }
+    }
+    memcpy(&vpfs->data[vpfs->data_len], buf, len);
+    vpfs->data_len += len;
+}
+
 // https://en.wikibooks.org/wiki/Algorithm_Implementation/Sorting/Quicksort#Iterative_Quicksort
 // While the array is of 64-bit elements, we only sort according to the low 32-bits
 #define QS_MAX 64
@@ -520,15 +547,27 @@ int main(int argc, char* argv[])
     bool needs_keypress = separate_console();
     sys_output_init();
     const char* pkg_arg = NULL;
+    const char* zrif_arg = NULL;
 
-    sys_printf("vpfs v0.8\n");
+    sys_printf("vpfs v0.9\n");
 
-    if (argc != 2)
+    for (int i = 1; i < argc; i++)
+    {
+        if (pkg_arg != NULL)
+        {
+            zrif_arg = argv[i];
+            break;
+        } else
+        {
+            pkg_arg = argv[i];
+        }
+    }
+
+    if (pkg_arg == NULL)
     {
         fprintf(stderr, "ERROR: no pkg file specified\n");
-        sys_error("Usage: %s file.pkg\n", argv[0]);
+        sys_error("Usage: %s file.pkg [zRIF]\n", argv[0]);
     }
-    pkg_arg = argv[1];
     size_t base_name;
     for (base_name = strlen(pkg_arg) - 1; base_name > 0; base_name--)
     {
@@ -637,12 +676,24 @@ int main(int argc, char* argv[])
     char category[256];
     char min_version[256];
     char pkg_version[256];
+    uint8_t rif[1024];
+    uint32_t rif_size = 0;
 
     parse_sfo(pkg, sfo_offset, sfo_size, category, title, content, min_version, pkg_version);
 
     if (type == PKG_TYPE_VITA_APP && strcmp(category, "gp") == 0)
     {
         type = PKG_TYPE_VITA_PATCH;
+    }
+
+    if (type != PKG_TYPE_VITA_PATCH && zrif_arg != NULL)
+    {
+        rif_size = (uint32_t)zrif_decode(zrif_arg, rif, sizeof(rif));
+        const char* rif_content_id = (char*)rif + (type == PKG_TYPE_VITA_PSM ? 0x50 : 0x10);
+        if (strncmp(rif_content_id, content, 0x30) != 0)
+        {
+            sys_error("ERROR: zRIF content id '%s' doesn't match pkg '%s'\n", rif_content_id, content);
+        }
     }
 
     sys_printf("[*] processing %s\n", pkg_type_name[type]);
@@ -755,14 +806,23 @@ int main(int argc, char* argv[])
 
     sys_printf("[*] adding sce_sys/package/stat.bin\n");
     name = strdup("sce_sys/package/stat.bin");
+    uint8_t stat_bin[768] = { 0 };
     vpfs_item.flags = VPFS_ITEM_TYPE_BIN;
     vpfs_item.pkg_index = -1;   // Local item
-    vpfs_item.offset = ~0;
-    vpfs_item.size = 768;
-    vpfs.data_len = (uint32_t)vpfs_item.size;
-    vpfs.data = calloc(vpfs.data_len, 1);
-    assert(vpfs.data != NULL);
+    vpfs_item.size = sizeof(stat_bin);
+    vpfs_set_data(&vpfs, stat_bin, sizeof(stat_bin));
     assert(vpfs_add(&vpfs, &vpfs_item, name));
+
+    if ((type == PKG_TYPE_VITA_APP || type == PKG_TYPE_VITA_DLC) && (zrif_arg != NULL))
+    {
+        sys_printf("[*] adding sce_sys/package/work.bin\n");
+        name = strdup("sce_sys/package/work.bin");
+        vpfs_item.flags = VPFS_ITEM_TYPE_BIN;
+        vpfs_item.pkg_index = -1;   // Local item
+        vpfs_item.size = rif_size;
+        vpfs_set_data(&vpfs, rif, rif_size);
+        assert(vpfs_add(&vpfs, &vpfs_item, name));
+    }
 
     vpfs.header.nb_items = vpfs.index;
     vpfs.header.local_data = sizeof(vpfs_header_t) + sizeof(vpfs_pkg_t) * vpfs.header.nb_pkgs +
@@ -802,10 +862,16 @@ int main(int argc, char* argv[])
         item->size = dir_dump.dir[i].size;
     }
 
-    // Set the offset of stat.bin, also in local_data
+    // Set the offset of stat.bin and optionally work.bin, also in local_data
     vpfs_item_t* item = vpfs_find_item(&vpfs, "sce_sys/package/stat.bin");
     assert(item != NULL);
     item->offset = dir_dump.buf_len;
+    if ((type == PKG_TYPE_VITA_APP || type == PKG_TYPE_VITA_DLC) && (zrif_arg != NULL))
+    {
+        item = vpfs_find_item(&vpfs, "sce_sys/package/work.bin");
+        assert(item != NULL);
+        item->offset = dir_dump.buf_len + sizeof(stat_bin);
+    }
 
     char path[1024];
     if (base_name != 0)
@@ -836,17 +902,18 @@ int main(int argc, char* argv[])
     vpfs_free(&vpfs);
 
     sys_printf("[*] done!\n");
-    sys_output_done();
 
 #ifdef _CRTDBG_MAP_ALLOC
     _CrtDumpMemoryLeaks();
 #endif
 
-    if (needs_keypress) {
-        printf("\nPress any key to exit...\n");
+    if (needs_keypress)
+    {
+        sys_printf("\nPress any key to exit...\n");
         fflush(stdout);
         getchar();
     }
+    sys_output_done();
 
     return 0;
 }
