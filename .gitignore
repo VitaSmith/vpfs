@@ -1,4 +1,5 @@
 *.bin
+*.cmake
 *.d
 *.db
 *.elf
@@ -7,11 +8,17 @@
 *.obj
 *.pkg
 *.sfo
+*.skprx
 *.vcxproj.filters
 *.vcxproj.user
 *.velf
+*.vpfs
 *.vpk
 *.zip
+CMakeCache.txt
 Win32
 Win64
 vpfs
+driver/CMakeFiles
+driver/Makefile
+driver/vpfs-stubs*
