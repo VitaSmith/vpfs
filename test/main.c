@@ -22,6 +22,7 @@
 #include <stdbool.h>
 #include <inttypes.h>
 #include <string.h>
+#include <taihen.h>
 
 #include <psp2/ctrl.h>
 #include <psp2/sqlite.h>
@@ -36,11 +37,13 @@
 
 #define VERSION             "0.3"
 #define DIRECTORY           "ux0:app/VPFS00000"
+#define VPFS_SKPRX          "ux0:tai/vpfs.skprx"
 #define perr(...)           do { console_set_color(RED); printf(__VA_ARGS__); console_set_color(WHITE); } while(0);
 
 int main()
 {
     int r = -1;
+    SceUID module_id = -1;
     SceCtrlData pad;
     SceIoDirent dir = { 0 };
     memset(&dir, 0, sizeof(SceIoDirent));
@@ -50,6 +53,12 @@ int main()
 
     printf("vpfs_test v" VERSION " - Vita PKG Filesystem tester\n");
     printf("Copyright (c) 2018 VitaSmith (GPLv3)\n\n");
+
+    module_id = taiLoadStartKernelModule(VPFS_SKPRX, 0, NULL, 0);
+    if (module_id < 0) {
+        perr("Could not load kernel module: 0x%08X\n", module_id);
+        goto out;
+    }
 
     SceUID dfd = sceIoDopen(DIRECTORY);
     if (dfd < 0) {
@@ -66,6 +75,11 @@ int main()
     sceIoDclose(dfd);
 
 out:
+    if (module_id >= 0) {
+        r = taiStopUnloadKernelModule(module_id, 0, NULL, 0, NULL, NULL);
+        if (r < 0)
+            perr("Could not unload kernel module: 0x%08X\n", r);
+    }
     console_set_color(CYAN);
     printf("\nPress X to exit.\n");
     do {

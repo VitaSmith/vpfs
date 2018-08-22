@@ -3,7 +3,8 @@ TARGET   = vpfs_test
 OBJS     = console.o draw.o font_data.o main.o 
 
 LIBS = -lc -lSceDisplay_stub -lSceGxm_stub -lSceCtrl_stub \
-	-lSceAppUtil_stub -lSceIofilemgr_stub -lSceSysmodule_stub
+	-lSceAppUtil_stub -lSceIofilemgr_stub -lSceSysmodule_stub \
+	-ltaihen_stub
 
 PREFIX  = arm-vita-eabi
 CC      = $(PREFIX)-gcc

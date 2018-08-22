@@ -1,0 +1,16 @@
+vpfs:
+  attributes: 0
+  version:
+    major: 1
+    minor: 0
+  main:
+    start: module_start
+    stop: module_stop
+  modules:
+    vpfs:
+      # Set to false for now since we can't unload the module
+      # if syscall are exported
+      syscall: false
+#      functions:
+#        - ksceSblSsMgrAESCTRDecrypt
+#        - usceSblSsMgrAESCTRDecrypt
