@@ -60,19 +60,19 @@ int main()
         goto out;
     }
 
-    SceUID dfd = sceIoDopen(DIRECTORY);
-    if (dfd < 0) {
-        perr("Could not open directory '%s': 0x%08X\n", DIRECTORY, dfd);
+    SceUID fd = sceIoDopen(DIRECTORY);
+    if (fd < 0) {
+        perr("Could not open directory '%s': 0x%08X\n", DIRECTORY, fd);
         goto out;
     }
-    while ((r = sceIoDread(dfd, &dir)) > 0) {
+    while ((r = sceIoDread(fd, &dir)) > 0) {
         printf("o %s%s\n", dir.d_name, SCE_S_ISDIR(dir.d_stat.st_mode) ? "/" : "");
     }
     if (r < 0) {
         perr("Could not read directory entry: 0x%08X\n", r);
         goto out;
     }
-    sceIoDclose(dfd);
+    sceIoDclose(fd);
 
 out:
     if (module_id >= 0) {

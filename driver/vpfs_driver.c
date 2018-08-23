@@ -23,6 +23,7 @@
 #include <psp2kern/kernel/sysmem.h>
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/io/fcntl.h>
+#include <psp2/io/dirent.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -37,6 +38,16 @@
 
 #define SceSblSsMgrForDriver_NID                0x61E9428D
 #define SceSblSsMgrAESCTRDecryptForDriver_NID   0x7D46768C
+
+#define SceIoDopen_NID                          0xE6E614B5
+#define SceIoDread_NID                          0x8713D662
+
+typedef struct sceIoDopenOpt
+{
+    uint32_t unk_0;
+    uint32_t unk_4;
+} sceIoDopenOpt;
+
 
 typedef int (sceSblSsMgrAESCTRDecryptForDriver_t)(uint8_t *src, uint8_t *dst, const uint32_t size, const uint8_t *key, const uint32_t key_size, uint8_t *iv, uint32_t mask_enable);
 sceSblSsMgrAESCTRDecryptForDriver_t*            sceSblSsMgrAESCTRDecryptForDriver = NULL;
@@ -187,6 +198,31 @@ out:
     return r;
 }
 
+// Hooks
+static SceUID hooks[2];
+static int nb_hooks = 0;
+
+static tai_hook_ref_t sceIoDopen_Ref;
+static tai_hook_ref_t sceIoDread_Ref;
+
+SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
+{
+    char path[256];
+    SceUID fd = TAI_CONTINUE(SceUID, sceIoDopen_Ref, dirname, opt);
+    // Copy the user pointer to kernel space for logging
+    ksceKernelStrncpyUserToKernel(path, (uintptr_t)dirname, 256);
+    printf("- sceIoDopen('%s'): 0x%08X\n", path, fd);
+    return fd;
+}
+
+int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
+{
+    char path[256];
+    int r = TAI_CONTINUE(int, sceIoDread_Ref, fd, dir);
+    printf("- sceIoDread(0x%08X): 0x%08X\n", fd, r);
+    return r;
+}
+
 // Module start/stop
 void _start() __attribute__((weak, alias("module_start")));
 int module_start(SceSize argc, const void *args)
@@ -200,11 +236,19 @@ int module_start(SceSize argc, const void *args)
     //    perr("Could not set sceSblSsMgrAESCTRDecryptForDriver: 0x%08X\n", r);
     //else 
     //    printf("sceSblSsMgrAESCTRDecryptForDriver successfully set.\n");
+
+    // Set the file system hooks
+    hooks[nb_hooks++] = taiHookFunctionExportForKernel(KERNEL_PID, &sceIoDopen_Ref, "SceIofilemgr", TAI_ANY_LIBRARY, SceIoDopen_NID, sceIoDopen_Hook);
+    hooks[nb_hooks++] = taiHookFunctionExportForKernel(KERNEL_PID, &sceIoDread_Ref, "SceIofilemgr", TAI_ANY_LIBRARY, SceIoDread_NID, sceIoDread_Hook);
     return SCE_KERNEL_START_SUCCESS;
 }
 
 int module_stop(SceSize argc, const void *args)
 {
     printf("Unloading VPFS kernel driver...\n");
+    if (hooks[--nb_hooks] >= 0)
+        taiHookReleaseForKernel(hooks[nb_hooks], sceIoDread_Ref);
+    if (hooks[--nb_hooks] >= 0)
+        taiHookReleaseForKernel(hooks[nb_hooks], sceIoDopen_Ref);
     return SCE_KERNEL_STOP_SUCCESS;
 }
