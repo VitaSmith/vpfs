@@ -35,19 +35,16 @@
 #define BUF_SIZE                                164640
 #define ROUNDUP(n, width)                       (((n) + (width) - 1) & (~(unsigned int)((width) - 1)))
 #define ONE_MB_SIZE                             (1024 * 1024)
+#define ARRAYSIZE(A)                            (sizeof(A)/sizeof((A)[0]))
 
 #define SceSblSsMgrForDriver_NID                0x61E9428D
 #define SceSblSsMgrAESCTRDecryptForDriver_NID   0x7D46768C
-
-#define SceIoDopen_NID                          0xE6E614B5
-#define SceIoDread_NID                          0x8713D662
 
 typedef struct sceIoDopenOpt
 {
     uint32_t unk_0;
     uint32_t unk_4;
 } sceIoDopenOpt;
-
 
 typedef int (sceSblSsMgrAESCTRDecryptForDriver_t)(uint8_t *src, uint8_t *dst, const uint32_t size, const uint8_t *key, const uint32_t key_size, uint8_t *iv, uint32_t mask_enable);
 sceSblSsMgrAESCTRDecryptForDriver_t*            sceSblSsMgrAESCTRDecryptForDriver = NULL;
@@ -199,16 +196,22 @@ out:
 }
 
 // Hooks
-static SceUID hooks[2];
-static int nb_hooks = 0;
+#define SCEIODOPEN      0
+#define SCEIODREAD      1
 
-static tai_hook_ref_t sceIoDopen_Ref;
-static tai_hook_ref_t sceIoDread_Ref;
+typedef struct {
+    void*           func;
+    uint32_t        nid;
+    SceUID          id;
+    tai_hook_ref_t  ref;
+} hook_t;
+
+hook_t hooks[];
 
 SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
 {
     char path[256];
-    SceUID fd = TAI_CONTINUE(SceUID, sceIoDopen_Ref, dirname, opt);
+    SceUID fd = TAI_CONTINUE(SceUID, hooks[SCEIODOPEN].ref, dirname, opt);
     // Copy the user pointer to kernel space for logging
     ksceKernelStrncpyUserToKernel(path, (uintptr_t)dirname, 256);
     printf("- sceIoDopen('%s'): 0x%08X\n", path, fd);
@@ -218,10 +221,16 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
 int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
 {
     char path[256];
-    int r = TAI_CONTINUE(int, sceIoDread_Ref, fd, dir);
+    int r = TAI_CONTINUE(int, hooks[SCEIODREAD].ref, fd, dir);
     printf("- sceIoDread(0x%08X): 0x%08X\n", fd, r);
     return r;
 }
+
+hook_t hooks[] = {
+    { sceIoDopen_Hook, 0xE6E614B5, -1, 0 },
+    { sceIoDread_Hook, 0x8713D662, -1, 0 },
+};
+
 
 // Module start/stop
 void _start() __attribute__((weak, alias("module_start")));
@@ -238,17 +247,17 @@ int module_start(SceSize argc, const void *args)
     //    printf("sceSblSsMgrAESCTRDecryptForDriver successfully set.\n");
 
     // Set the file system hooks
-    hooks[nb_hooks++] = taiHookFunctionExportForKernel(KERNEL_PID, &sceIoDopen_Ref, "SceIofilemgr", TAI_ANY_LIBRARY, SceIoDopen_NID, sceIoDopen_Hook);
-    hooks[nb_hooks++] = taiHookFunctionExportForKernel(KERNEL_PID, &sceIoDread_Ref, "SceIofilemgr", TAI_ANY_LIBRARY, SceIoDread_NID, sceIoDread_Hook);
+    for (int i = 0; i < ARRAYSIZE(hooks); i++)
+        hooks[i].id = taiHookFunctionExportForKernel(KERNEL_PID, &hooks[i].ref, "SceIofilemgr", TAI_ANY_LIBRARY, hooks[i].nid, hooks[i].func);
     return SCE_KERNEL_START_SUCCESS;
 }
 
 int module_stop(SceSize argc, const void *args)
 {
     printf("Unloading VPFS kernel driver...\n");
-    if (hooks[--nb_hooks] >= 0)
-        taiHookReleaseForKernel(hooks[nb_hooks], sceIoDread_Ref);
-    if (hooks[--nb_hooks] >= 0)
-        taiHookReleaseForKernel(hooks[nb_hooks], sceIoDopen_Ref);
+    for (int i = ARRAYSIZE(hooks) - 1; i >= 0; i--) {
+        if (hooks[i].id >= 0)
+            taiHookReleaseForKernel(hooks[i].id, hooks[i].ref);
+    }
     return SCE_KERNEL_STOP_SUCCESS;
 }
