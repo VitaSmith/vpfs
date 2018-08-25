@@ -39,7 +39,7 @@
     vpfs_header_t;
     vdfs_pkg[nb_pkgs];
     uint32_t sha[nb_items]; // first 32-bits of the SHA-1 for the path (the remainder of the SHA-1
-    vpfs_item_t[nb_items];    // is in the xsha[] array from the relevant vpfs_item_t)
+    vpfs_item_t[nb_items];  // is in the xsha[] array from the relevant vpfs_item_t)
     char dir_list[];        // concatenation of NUL terminated UTF-8 strings, grouped by directory
     uint8_t additional_local_data[] (work.bin, modded files, etc)
 
@@ -49,14 +49,14 @@
   dir_list_offset = item_table_offset + nb_items * sizeof(vpfs_item_t);
 
   Lookups:
-  - root path ("ux0:/app/TITLE_ID/") must match the vpfs path ("ux0:/app/TITLE_ID.vpfs")
+  - root path ("ux0:app/TITLE_ID/") must match the vpfs path ("ux0:app/TITLE_ID.vpfs")
     => split on slashes and see if we have a .vpfs for that. Could even have a whole
        "ux0:/app.vpfs"...
   - (short) path -> SHA-1 (short means "ux0:app/TITLE_ID/" is removed)
   - SHA-1 index = pkg_item index
   Ultimately, we'll want to sort the SHA-1 and do a *PROPER* lookup, by starting at the most
   appropriate position in our table and dichotomizing the shit out of our search. Probably also
-  want to speed things up through using uint64_t for lookup (through memcmp is probably
+  want to speed things up through using uint64_t for lookup (though memcmp is probably
   optimised enough). If SHA-1 not found in our tables, hand over to the original call.
 
   For dir entries:

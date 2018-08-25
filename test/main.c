@@ -35,8 +35,8 @@
 
 #include "console.h"
 
-#define VERSION             "0.3"
-#define DIRECTORY           "ux0:app/VPFS00000"
+#define VERSION             "0.4"
+#define DIRECTORY           "ux0:app/PCSE00001"
 #define VPFS_SKPRX          "ux0:tai/vpfs.skprx"
 #define perr(...)           do { console_set_color(RED); printf(__VA_ARGS__); console_set_color(WHITE); } while(0);
 

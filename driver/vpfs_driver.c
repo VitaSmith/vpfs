@@ -23,19 +23,22 @@
 #include <psp2kern/kernel/sysmem.h>
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/io/fcntl.h>
+#include <psp2kern/io/stat.h>
 #include <psp2/io/dirent.h>
 
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #include <taihen.h>
 
 #define LOG_PATH                                "ux0:data/vpfs.log"
-#define BUF_SIZE                                164640
 #define ROUNDUP(n, width)                       (((n) + (width) - 1) & (~(unsigned int)((width) - 1)))
 #define ONE_MB_SIZE                             (1024 * 1024)
 #define ARRAYSIZE(A)                            (sizeof(A)/sizeof((A)[0]))
+
+#define SCE_ERROR_ERRNO_ENOENT                  0x80010002
 
 #define SceSblSsMgrForDriver_NID                0x61E9428D
 #define SceSblSsMgrAESCTRDecryptForDriver_NID   0x7D46768C
@@ -198,6 +201,7 @@ out:
 // Hooks
 #define SCEIODOPEN      0
 #define SCEIODREAD      1
+#define SCEIODCLOSE     2
 
 typedef struct {
     void*           func;
@@ -210,25 +214,67 @@ hook_t hooks[];
 
 SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
 {
-    char path[256];
-    SceUID fd = TAI_CONTINUE(SceUID, hooks[SCEIODOPEN].ref, dirname, opt);
-    // Copy the user pointer to kernel space for logging
+    SceIoStat stat;
+    char path[256 + 6];
+    char ext[6] = ".vpfs", bck[6];
+    size_t i;
+    SceUID fd = SCE_ERROR_ERRNO_ENOENT;
+
+    // Copy the user pointer to kernel space for processing
     ksceKernelStrncpyUserToKernel(path, (uintptr_t)dirname, 256);
+    size_t len = strlen(path);
+    if (path[len - 1] != '/') {
+        path[len] = '/';
+        path[len + 1] = 0;
+    }
+    for (i = len; i > 0; i--) {
+        if (path[i] == '/') {
+            memcpy(bck, &path[i], 6);
+            memcpy(&path[i], ext, 6);
+            if ((ksceIoGetstat(path, &stat) >= 0) && SCE_S_ISREG(stat.st_mode))
+                break;
+            memcpy(&path[i], bck, 6);
+        }
+    }
+    if (i == 0) {
+        fd = TAI_CONTINUE(SceUID, hooks[SCEIODOPEN].ref, dirname, opt);
+        // Couldn't find a relevant VPFS => use the original function call
+    } else {
+        // Open the relevant VPFS file (if not open)
+        // if open, get the fd
+
+        // Validate VPFS data
+
+        // Create an fd struct we can reuse, and store the open VPFS fd there
+
+        // Store the index of the path in our struct
+        memcpy(&path[i], bck, 6);
+        printf("  REMAINDER PATH: '%s'\n", &path[i]);
+
+        // Return an fd
+    }
     printf("- sceIoDopen('%s'): 0x%08X\n", path, fd);
     return fd;
 }
 
 int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
 {
-    char path[256];
     int r = TAI_CONTINUE(int, hooks[SCEIODREAD].ref, fd, dir);
     printf("- sceIoDread(0x%08X): 0x%08X\n", fd, r);
+    return r;
+}
+
+int sceIoDClose_Hook(SceUID fd)
+{
+    int r = TAI_CONTINUE(int, hooks[SCEIODCLOSE].ref, fd);
+    printf("- sceIoDClose(0x%08X): 0x%08X\n", fd, r);
     return r;
 }
 
 hook_t hooks[] = {
     { sceIoDopen_Hook, 0xE6E614B5, -1, 0 },
     { sceIoDread_Hook, 0x8713D662, -1, 0 },
+    { sceIoDClose_Hook, 0x422A221A, -1, 0 },
 };
 
 
