@@ -112,7 +112,8 @@ typedef struct {
 } vpfs_item_t;
 
 
-#define VPFS_MAGIC              0x56504653  // 'VPFS'
+#define VPFS_MAGIC              0x53465056  // 'VPFS' in little endian
+#define VPFD_MAGIC              0x44465056  // 'VPFD' in little endian
 #define VPFS_VERSION            0x00010000  // 'v1.0'
 
 // Flags
@@ -127,43 +128,3 @@ typedef struct {
 #define VPFS_ITEM_TYPE_DIR      0x10000000  // Directory flag
 #define VPFS_ITEM_DELETED       0x80000000  // Deleted flag
 #define VPFS_ITEM_OVERRIDDEN    0x40000000  // If overriden from patch or DLC. Probably not needed.
-
-// Internal structures for directory listing
-typedef struct dir_entry_t {
-    const char* path;
-    struct dir_entry_t* children;
-    size_t index;                 // Current array size
-    size_t max;                   // Maximum array size
-} dir_entry_t;
-
-typedef struct {
-    char*           path;
-    uint32_t        offset;
-    uint32_t        size;
-} dir_record_t;
-
-typedef struct {
-    uint32_t        nb_dirs;
-    uint32_t        dir_index;
-    uint32_t        buf_len;
-    uint32_t        buf_offset;
-    dir_record_t*   dir;
-    char*           buf;
-} dir_dump_t;
-
-#define DIRENTRY_INITIAL_CHILDREN_SIZE  4
-#define NUM_EXTRA_ITEMS                 5
-
-typedef struct {
-    uint32_t        index;
-    vpfs_header_t   header;
-    vpfs_pkg_t*     pkg;
-    uint64_t*       sha;
-    uint32_t*       sorted_sha;
-    char**          name;
-    vpfs_item_t*    item;
-    dir_entry_t*    root;
-    uint8_t*        data;       // buffer for extra data
-    uint32_t        data_len;
-    uint32_t        data_max;
-} vpfs_t;

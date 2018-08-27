@@ -16,6 +16,8 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include "../vpfs.h"
+#include "../vpfs_utils.h"
 #include "vpfs_driver.h"
 
 #include <psp2kern/types.h>
@@ -35,15 +37,22 @@
 
 #define LOG_PATH                                "ux0:data/vpfs.log"
 #define ROUNDUP(n, width)                       (((n) + (width) - 1) & (~(unsigned int)((width) - 1)))
+#define ONE_KB_SIZE                             1024
 #define ONE_MB_SIZE                             (1024 * 1024)
 #define ARRAYSIZE(A)                            (sizeof(A)/sizeof((A)[0]))
+#define MAX_PATH                                128
 
 #define SCE_ERROR_ERRNO_ENOENT                  0x80010002
+#define SCE_ERROR_ERRNO_EIO                     0x80010005
+#define SCE_ERROR_ERRNO_ENOMEM                  0x8001000C
+#define SCE_ERROR_ERRNO_EACCES                  0x8001000D
 
 #define SceSblSsMgrForDriver_NID                0x61E9428D
 #define SceSblSsMgrAESCTRDecryptForDriver_NID   0x7D46768C
 
-typedef struct sceIoDopenOpt
+static char vpfs_ext[] = ".vpfs";
+
+typedef struct
 {
     uint32_t unk_0;
     uint32_t unk_4;
@@ -61,8 +70,7 @@ static void log_print(const char* msg)
 {
     SceUID fd = ksceIoOpen(LOG_PATH, SCE_O_CREAT | SCE_O_APPEND | SCE_O_WRONLY, 0777);
 
-    if (fd >= 0)
-    {
+    if (fd >= 0) {
         ksceIoWrite(fd, msg, strlen(msg));
         ksceIoClose(fd);
     }
@@ -71,10 +79,10 @@ static void log_print(const char* msg)
 #define perr        printf
 
 // Kernel alloc/free functions
-int kalloc(char* path, uint32_t size, SceUID* uid, uint8_t** dest)
+int kalloc(const char* path, uint32_t size, SceUID* uid, uint8_t** dest)
 {
     int r;
-    *uid = ksceKernelAllocMemBlock(path, SCE_KERNEL_MEMBLOCK_TYPE_KERNEL_RW, ROUNDUP(size, ONE_MB_SIZE), 0);
+    *uid = ksceKernelAllocMemBlock(path, SCE_KERNEL_MEMBLOCK_TYPE_KERNEL_RW, ROUNDUP(size, ONE_KB_SIZE), 0);
     if (*uid < 0) {
         perr("kalloc: Could not allocate buffer: 0x%08X (size: 0x%X)\n", *uid, size);
         return *uid;
@@ -198,6 +206,75 @@ out:
     return r;
 }
 
+// Helper functions
+
+typedef struct
+{
+    uint32_t    magic;
+    char        path[MAX_PATH + sizeof(vpfs_ext)];
+    SceUID      uid;
+    uint8_t*    data;
+} vfd_t;
+
+// TODO: allocate this
+static vfd_t vfd;
+
+SceUID vpfs_open(const char *path)
+{
+    SceUID fd = -1;
+    vfd.uid = -1;
+    SceUID r = SCE_ERROR_ERRNO_ENOENT;
+    SceIoStat stat;
+
+    // First, check if the VPFS path exists and is a regular file
+    if ((ksceIoGetstat(path, &stat) < 0) || (!SCE_S_ISREG(stat.st_mode)))
+        return SCE_ERROR_ERRNO_ENOENT;
+
+    // Allocate memory to cache the VPFS data
+    if (kalloc(path, stat.st_size, &vfd.uid, &vfd.data) < 0)
+        return SCE_ERROR_ERRNO_ENOMEM;
+
+    fd = ksceIoOpen(path, SCE_O_RDONLY, 0);
+    if (fd < 0) {
+        perr("Could not open '%s': 0x%08X\n", path, fd);
+        goto out;
+    }
+
+    int read = ksceIoRead(fd, vfd.data, stat.st_size);
+    if (read != stat.st_size) {
+        perr("Could not read VPFS data: 0x%08X\n", read);
+        r = SCE_ERROR_ERRNO_EIO;
+        goto out;
+    }
+    vpfs_header_t* header = (vpfs_header_t*)vfd.data;
+    if (header->magic != VPFS_MAGIC) {
+        perr("Invalid VPFS magic\n");
+        r = SCE_ERROR_ERRNO_EACCES;
+        goto out;
+    }
+
+    vfd.magic = VPFD_MAGIC;
+    strncpy(vfd.path, path, sizeof(vfd.path));
+    r = (SceUID)&vfd;
+
+out:
+    if (fd >= 0)
+        ksceIoClose(fd);
+    if ((r < 0) && (vfd.uid >= 0))
+        kfree(vfd.uid);
+    return r;
+}
+
+int vpfs_close(SceUID fd)
+{
+    vfd_t* vfd = (vfd_t*)fd;
+    if (vfd->magic != VPFD_MAGIC)
+        return SCE_ERROR_ERRNO_EACCES;
+    if (vfd->uid >= 0)
+        kfree(vfd->uid);
+    return 0;
+}
+
 // Hooks
 #define SCEIODOPEN      0
 #define SCEIODREAD      1
@@ -214,14 +291,14 @@ hook_t hooks[];
 
 SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
 {
-    SceIoStat stat;
-    char path[256 + 6];
-    char ext[6] = ".vpfs", bck[6];
+    int r;
+    char path[MAX_PATH + sizeof(vpfs_ext)];
+    char bck[sizeof(vpfs_ext)];
     size_t i;
     SceUID fd = SCE_ERROR_ERRNO_ENOENT;
 
     // Copy the user pointer to kernel space for processing
-    ksceKernelStrncpyUserToKernel(path, (uintptr_t)dirname, 256);
+    ksceKernelStrncpyUserToKernel(path, (uintptr_t)dirname, sizeof(path) - sizeof(vpfs_ext));
     size_t len = strlen(path);
     if (path[len - 1] != '/') {
         path[len] = '/';
@@ -229,31 +306,40 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
     }
     for (i = len; i > 0; i--) {
         if (path[i] == '/') {
-            memcpy(bck, &path[i], 6);
-            memcpy(&path[i], ext, 6);
-            if ((ksceIoGetstat(path, &stat) >= 0) && SCE_S_ISREG(stat.st_mode))
+            memcpy(bck, &path[i], sizeof(vpfs_ext));
+            memcpy(&path[i], vpfs_ext, sizeof(vpfs_ext));
+            fd = vpfs_open(path);
+            if (fd >= 0)
                 break;
-            memcpy(&path[i], bck, 6);
+            memcpy(&path[i], bck, sizeof(vpfs_ext));
         }
     }
     if (i == 0) {
-        fd = TAI_CONTINUE(SceUID, hooks[SCEIODOPEN].ref, dirname, opt);
         // Couldn't find a relevant VPFS => use the original function call
-    } else {
-        // Open the relevant VPFS file (if not open)
-        // if open, get the fd
-
-        // Validate VPFS data
-
-        // Create an fd struct we can reuse, and store the open VPFS fd there
-
-        // Store the index of the path in our struct
-        memcpy(&path[i], bck, 6);
-        printf("  REMAINDER PATH: '%s'\n", &path[i]);
-
-        // Return an fd
+        fd = TAI_CONTINUE(SceUID, hooks[SCEIODOPEN].ref, dirname, opt);
+        printf("- sceIoDopen('%s') [ORG]: 0x%08X\n", path, fd);
+        return fd;
     }
-    printf("- sceIoDopen('%s'): 0x%08X\n", path, fd);
+
+    // We have an opened vfd -> process it
+    vfd_t* vfd = (vfd_t*)fd;
+    vpfs_header_t* header = (vpfs_header_t*)vfd->data;
+
+    // TODO: SHA-1 of remainder path
+    // TODO: Lookup in short SHA-1
+    // TODO: Item offset from short SHA-1
+
+    printf("  NB pkgs = %d\n", header->nb_pkgs);
+    printf("  NB items = %d\n", header->nb_items);
+    //uint32_t offset = sizeof(vpfs_header_t) +
+    //    header.nb_pkgs * sizeof(vpfs_pkg_t) +
+    //    header.nb_items * (sizeof(uint32_t) + sizeof(vpfs_item_t));
+
+    // TODO: Store the index of the path in our struct
+    memcpy(&path[i], bck, sizeof(vpfs_ext));
+    printf("  REMAINDER PATH: '%s'\n", &path[i+1]);
+
+    printf("- sceIoDopen('%s') [OVR]: 0x%08X\n", path, fd);
     return fd;
 }
 
@@ -266,7 +352,17 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
 
 int sceIoDClose_Hook(SceUID fd)
 {
-    int r = TAI_CONTINUE(int, hooks[SCEIODCLOSE].ref, fd);
+    int r = SCE_ERROR_ERRNO_ENOENT;
+    // We're kind of gambling that Sony's native FDs are always within memory
+    // we can address, and that we can attempt to read the data they point to.
+    // Then again, if this is a bad gamble, the system will definitely let us know...
+    vfd_t* vfd = (vfd_t*)fd;
+    printf("IN sceIoDClose...\n");
+    if (vfd->magic != VPFD_MAGIC) {
+        r = TAI_CONTINUE(int, hooks[SCEIODCLOSE].ref, fd);
+    } else {
+        r = vpfs_close(fd);
+    }
     printf("- sceIoDClose(0x%08X): 0x%08X\n", fd, r);
     return r;
 }

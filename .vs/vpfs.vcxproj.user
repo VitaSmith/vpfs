@@ -4,4 +4,8 @@
     <LocalDebuggerCommandArguments>C:/vpfs/UP0700-PCSE00001_00-RIDGERACERPSVITA.pkg</LocalDebuggerCommandArguments>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <LocalDebuggerCommandArguments>C:/vpfs/UP0700-PCSE00001_00-RIDGERACERPSVITA.pkg</LocalDebuggerCommandArguments>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
 </Project>

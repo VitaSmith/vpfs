@@ -44,6 +44,46 @@
 #include <windows.h>
 #endif
 
+// Internal structures for directory listing
+typedef struct dir_entry_t {
+    const char* path;
+    struct dir_entry_t* children;
+    size_t index;                 // Current array size
+    size_t max;                   // Maximum array size
+} dir_entry_t;
+
+typedef struct {
+    char*           path;
+    uint32_t        offset;
+    uint32_t        size;
+} dir_record_t;
+
+typedef struct {
+    uint32_t        nb_dirs;
+    uint32_t        dir_index;
+    uint32_t        buf_len;
+    uint32_t        buf_offset;
+    dir_record_t*   dir;
+    char*           buf;
+} dir_dump_t;
+
+#define DIRENTRY_INITIAL_CHILDREN_SIZE  4
+#define NUM_EXTRA_ITEMS                 5
+
+typedef struct {
+    uint32_t        index;
+    vpfs_header_t   header;
+    vpfs_pkg_t*     pkg;
+    uint64_t*       sha;
+    uint32_t*       sorted_sha;
+    char**          name;
+    vpfs_item_t*    item;
+    dir_entry_t*    root;
+    uint8_t*        data;       // buffer for extra data
+    uint32_t        data_len;
+    uint32_t        data_max;
+} vpfs_t;
+
 #define PKG_HEADER_SIZE         192
 #define PKG_HEADER_EXT_SIZE     64
 
@@ -378,7 +418,7 @@ void direntry_dump(dir_dump_t* dump, dir_entry_t* entry)
 bool vpfs_init(vpfs_t *vpfs, uint32_t nb_pkgs, uint32_t nb_items)
 {
     memset(vpfs, 0, sizeof(vpfs_t));
-    set32be(&vpfs->header.magic, VPFS_MAGIC);
+    vpfs->header.magic = VPFS_MAGIC;
     vpfs->header.version = VPFS_VERSION;
     vpfs->header.nb_pkgs = nb_pkgs;
     vpfs->header.nb_items = nb_items;
@@ -714,6 +754,11 @@ int main(int argc, char* argv[])
     char* name;
     vpfs_item_t vpfs_item;
 
+    // Add an entry for the root directory ("/")
+    vpfs_item.flags = VPFS_ITEM_TYPE_DIR;
+    vpfs_item.pkg_index = -1;
+    assert(vpfs_add(&vpfs, &vpfs_item, strdup("")));
+
     for (uint32_t item_index = 0; item_index < item_count; item_index++)
     {
         uint8_t item[32];
@@ -853,10 +898,9 @@ int main(int argc, char* argv[])
     assert(dir_dump.buf != NULL);
     direntry_dump(&dir_dump, vpfs.root);
 
-    // Start at 1, since there's no item for root listing
-    for (uint32_t i = 1; i < dir_dump.nb_dirs; i++)
+    for (uint32_t i = 0; i < dir_dump.nb_dirs; i++)
     {
-        vpfs_item_t* item = vpfs_find_item(&vpfs, dir_dump.dir[i].path);
+        vpfs_item_t* item = vpfs_find_item(&vpfs, (i == 0) ? "" : dir_dump.dir[i].path);
         assert(item->flags & VPFS_ITEM_TYPE_DIR);
         item->offset = dir_dump.dir[i].offset;
         item->size = dir_dump.dir[i].size;
