@@ -377,6 +377,8 @@ void direntry_dump_init(dir_dump_t* dump, dir_entry_t* entry)
 {
     for (size_t i = 0; i < entry->index; i++)
     {
+        if (entry->children[i].path[0] == 0)
+            continue;
         dump->buf_len += (uint32_t)strlen(entry->children[i].path) + 1;
     }
     if (entry->path[strlen(entry->path) - 1] == '/')
@@ -399,6 +401,8 @@ void direntry_dump(dir_dump_t* dump, dir_entry_t* entry)
     }
     for (size_t i = 0; i < entry->index; i++)
     {
+        if (entry->children[i].path[0] == 0)
+            continue;
         strcpy(&dump->buf[dump->buf_offset], entry->children[i].path);
         dump->buf_offset += (uint32_t)strlen(entry->children[i].path) + 1;
     }
@@ -497,7 +501,6 @@ vpfs_item_t* vpfs_find_item(vpfs_t* vpfs, char* path)
     sha1sum((uint8_t*)path, strlen(path), sha);
     uint32_t i, sha_head = get32be(sha);
 
-    // TODO: dichotomial lookup
     for (i = 0; i < vpfs->header.nb_items; i++)
     {
         if (sha_head == vpfs->sorted_sha[i])
@@ -752,9 +755,9 @@ int main(int argc, char* argv[])
     sys_output_progress_init(pkg_size);
 
     char* name;
-    vpfs_item_t vpfs_item;
+    vpfs_item_t vpfs_item = { 0 };
 
-    // Add an entry for the root directory ("/")
+    // Add an entry for the root directory ("")
     vpfs_item.flags = VPFS_ITEM_TYPE_DIR;
     vpfs_item.pkg_index = -1;
     assert(vpfs_add(&vpfs, &vpfs_item, strdup("")));
@@ -797,7 +800,7 @@ int main(int argc, char* argv[])
                 sce_sys_package_created = true;
             }
 
-            // offset and size will be in the .vpfs > negative index
+            // offset and size will be in the .vpfs -> negative index
             vpfs_item.flags = VPFS_ITEM_TYPE_DIR;
             vpfs_item.pkg_index = -1;
             assert(vpfs_add(&vpfs, &vpfs_item, name));
@@ -870,8 +873,6 @@ int main(int argc, char* argv[])
     }
 
     vpfs.header.nb_items = vpfs.index;
-    vpfs.header.local_data = sizeof(vpfs_header_t) + sizeof(vpfs_pkg_t) * vpfs.header.nb_pkgs +
-        (sizeof(uint32_t) + sizeof(vpfs_item_t)) * vpfs.header.nb_items;
 
     // Sort items according to the first 32-bits of the SHA-1
     sys_printf("[*] sorting entries...\n");
@@ -898,23 +899,25 @@ int main(int argc, char* argv[])
     assert(dir_dump.buf != NULL);
     direntry_dump(&dir_dump, vpfs.root);
 
+    uint32_t local_data_offset = sizeof(vpfs_header_t) + sizeof(vpfs_pkg_t) * vpfs.header.nb_pkgs +
+        (sizeof(uint32_t) + sizeof(vpfs_item_t)) * vpfs.header.nb_items;
     for (uint32_t i = 0; i < dir_dump.nb_dirs; i++)
     {
         vpfs_item_t* item = vpfs_find_item(&vpfs, (i == 0) ? "" : dir_dump.dir[i].path);
         assert(item->flags & VPFS_ITEM_TYPE_DIR);
-        item->offset = dir_dump.dir[i].offset;
+        item->offset = local_data_offset + dir_dump.dir[i].offset;
         item->size = dir_dump.dir[i].size;
     }
 
     // Set the offset of stat.bin and optionally work.bin, also in local_data
     vpfs_item_t* item = vpfs_find_item(&vpfs, "sce_sys/package/stat.bin");
     assert(item != NULL);
-    item->offset = dir_dump.buf_len;
+    item->offset = local_data_offset + dir_dump.buf_len;
     if ((type == PKG_TYPE_VITA_APP || type == PKG_TYPE_VITA_DLC) && (zrif_arg != NULL))
     {
         item = vpfs_find_item(&vpfs, "sce_sys/package/work.bin");
         assert(item != NULL);
-        item->offset = dir_dump.buf_len + sizeof(stat_bin);
+        item->offset = local_data_offset + dir_dump.buf_len + sizeof(stat_bin);
     }
 
     char path[1024];

@@ -46,6 +46,8 @@
 #define SCE_ERROR_ERRNO_EIO                     0x80010005
 #define SCE_ERROR_ERRNO_ENOMEM                  0x8001000C
 #define SCE_ERROR_ERRNO_EACCES                  0x8001000D
+#define SCE_ERROR_ERRNO_EFAULT                  0x8001000E
+#define SCE_ERROR_ERRNO_ENOTDIR                 0x80010014
 
 #define SceSblSsMgrForDriver_NID                0x61E9428D
 #define SceSblSsMgrAESCTRDecryptForDriver_NID   0x7D46768C
@@ -214,6 +216,7 @@ typedef struct
     char        path[MAX_PATH + sizeof(vpfs_ext)];
     SceUID      uid;
     uint8_t*    data;
+    uint32_t    dir_offset;
 } vfd_t;
 
 // TODO: allocate this
@@ -237,6 +240,11 @@ SceUID vpfs_open(const char *path)
     fd = ksceIoOpen(path, SCE_O_RDONLY, 0);
     if (fd < 0) {
         perr("Could not open '%s': 0x%08X\n", path, fd);
+        goto out;
+    }
+    // Sanity check
+    if (stat.st_size < sizeof(vpfs_header_t) + sizeof(vpfs_pkg_t) + sizeof(uint32_t) + sizeof(vpfs_item_t)) {
+        perr("VPFS file is too small\n");
         goto out;
     }
 
@@ -273,6 +281,53 @@ int vpfs_close(SceUID fd)
     if (vfd->uid >= 0)
         kfree(vfd->uid);
     return 0;
+}
+
+bool sha1sum(const char* path, uint8_t* sum)
+{
+    bool r = false;
+    // TODO: For now return the harcoded value for root path ("")
+    const uint8_t empty_sum[20] = {
+        0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55, 0xbf, 0xef, 0x95, 0x60, 0x18, 0x90, 0xaf, 0xd8, 0x07, 0x09
+    };
+
+    if (sum == NULL)
+        goto out;
+
+    memcpy(sum, empty_sum, 20);
+    r = true;
+
+out:
+    return r;
+}
+
+vpfs_item_t* vpfs_find_item(uint8_t* vpfs, const char* path)
+{
+    uint32_t i;
+    uint8_t sha1[20];
+    vpfs_header_t* header = (vpfs_header_t*)vpfs;
+    uint32_t* sha_table = (uint32_t*)&vpfs[sizeof(vpfs_header_t) + header->nb_pkgs * sizeof(vpfs_pkg_t)];
+
+    sha1sum(path, sha1);
+    uint32_t short_sha = get32be(sha1);
+
+    // TODO: Speed this up through dichotomy
+    for (i = 0; (i < header->nb_items) && (sha_table[i] != short_sha); i++);
+    if (i >= header->nb_items)
+        return NULL;
+    vpfs_item_t* item = (vpfs_item_t*)&vpfs[sizeof(vpfs_header_t) +
+        header->nb_pkgs * sizeof(vpfs_pkg_t) + header->nb_items * sizeof(uint32_t) + i *sizeof(vpfs_item_t)];
+    if (memcmp(item->xsha, &sha1[4], 16) == 0)
+        return item;
+
+    // Full SHA-1 doesn't match -> Try next items until we get a match or short SHA-1 doesn't match
+    while ((++i < header->nb_items) && (sha_table[i] == short_sha)) {
+        item = (vpfs_item_t*)&vpfs[sizeof(vpfs_header_t) +
+            header->nb_pkgs * sizeof(vpfs_pkg_t) + header->nb_items * sizeof(uint32_t) + i * sizeof(vpfs_item_t)];
+        if (memcmp(item->xsha, &sha1[4], 16) == 0)
+            return item;
+    }
+    return NULL;
 }
 
 // Hooks
@@ -321,43 +376,62 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
         return fd;
     }
 
+    memcpy(&path[i], bck, sizeof(vpfs_ext));
     // We have an opened vfd -> process it
     vfd_t* vfd = (vfd_t*)fd;
-    vpfs_header_t* header = (vpfs_header_t*)vfd->data;
+    vpfs_item_t* item = vpfs_find_item(vfd->data, &path[i + 1]);
+    if (item == NULL) {
+        printf("- sceIoDopen('%s') [OVL]: Entry not found in .vpfs\n", path);
+        return SCE_ERROR_ERRNO_ENOENT;
+    }
 
-    // TODO: SHA-1 of remainder path
-    // TODO: Lookup in short SHA-1
-    // TODO: Item offset from short SHA-1
-
-    printf("  NB pkgs = %d\n", header->nb_pkgs);
-    printf("  NB items = %d\n", header->nb_items);
-    //uint32_t offset = sizeof(vpfs_header_t) +
-    //    header.nb_pkgs * sizeof(vpfs_pkg_t) +
-    //    header.nb_items * (sizeof(uint32_t) + sizeof(vpfs_item_t));
-
-    // TODO: Store the index of the path in our struct
-    memcpy(&path[i], bck, sizeof(vpfs_ext));
-    printf("  REMAINDER PATH: '%s'\n", &path[i+1]);
-
-    printf("- sceIoDopen('%s') [OVR]: 0x%08X\n", path, fd);
+    // Check our data
+    if (!(item->flags & VPFS_ITEM_TYPE_DIR)) {
+        printf("- sceIoDopen('%s') [OVL]: Item found is not a directory\n", path);
+        return SCE_ERROR_ERRNO_ENOTDIR;
+    }
+    if (item->flags & VPFS_ITEM_DELETED) {
+        printf("- sceIoDopen('%s') [OVL]: Item was deleted\n", path);
+        return SCE_ERROR_ERRNO_ENOENT;
+    }
+    if (item->pkg_index > 0) {
+        printf("- sceIoDopen('%s') [OVL]: Directory offset is not in VPFS file\n", path);
+        return SCE_ERROR_ERRNO_EFAULT;
+    }
+    vfd->dir_offset = (uint32_t)item->offset;
+    printf("- sceIoDopen('%s') [OVL]: 0x%08X\n", path, fd);
     return fd;
 }
 
 int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
-{
-    int r = TAI_CONTINUE(int, hooks[SCEIODREAD].ref, fd, dir);
-    printf("- sceIoDread(0x%08X): 0x%08X\n", fd, r);
-    return r;
-}
-
-int sceIoDClose_Hook(SceUID fd)
 {
     int r = SCE_ERROR_ERRNO_ENOENT;
     // We're kind of gambling that Sony's native FDs are always within memory
     // we can address, and that we can attempt to read the data they point to.
     // Then again, if this is a bad gamble, the system will definitely let us know...
     vfd_t* vfd = (vfd_t*)fd;
-    printf("IN sceIoDClose...\n");
+    if (vfd->magic != VPFD_MAGIC) {
+        r = TAI_CONTINUE(int, hooks[SCEIODREAD].ref, fd, dir);
+        printf("- sceIoDread(0x%08X) [ORG]: 0x%08X\n", fd, r);
+    } else {
+        size_t len = strlen((char*)&vfd->data[vfd->dir_offset]);
+        if (len++ == 0) {
+            r = 0;
+        } else {
+            // TODO: add SceIoStat d_stat attributes as needed
+            ksceKernelMemcpyKernelToUser((uintptr_t)dir->d_name, &vfd->data[vfd->dir_offset], len);
+            vfd->dir_offset += len;
+            r = 1;
+        }
+        printf("- sceIoDread(0x%08X) [OVL]: 0x%08X\n", fd, r);
+    }
+    return r;
+}
+
+int sceIoDClose_Hook(SceUID fd)
+{
+    int r = SCE_ERROR_ERRNO_ENOENT;
+    vfd_t* vfd = (vfd_t*)fd;
     if (vfd->magic != VPFD_MAGIC) {
         r = TAI_CONTINUE(int, hooks[SCEIODCLOSE].ref, fd);
     } else {

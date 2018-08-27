@@ -87,7 +87,6 @@ typedef struct {
     uint32_t    version;
     uint32_t    nb_pkgs;
     uint32_t    nb_items;
-    uint32_t    local_data;
 } vpfs_header_t;
 
 // TODO: for sceIoStat, return the date of the pkg
