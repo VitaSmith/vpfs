@@ -48,9 +48,11 @@
 #define SCE_ERROR_ERRNO_EACCES                  0x8001000D
 #define SCE_ERROR_ERRNO_EFAULT                  0x8001000E
 #define SCE_ERROR_ERRNO_ENOTDIR                 0x80010014
+#define SCE_KERNEL_ERROR_INVALID_ARGUMENT       0x80020003
 
 #define SceSblSsMgrForDriver_NID                0x61E9428D
 #define SceSblSsMgrAESCTRDecryptForDriver_NID   0x7D46768C
+#define SceSblSsMgrSHA1ForDriver_NID            0xEB3AF9B5
 
 static char vpfs_ext[] = ".vpfs";
 
@@ -62,6 +64,12 @@ typedef struct
 
 typedef int (sceSblSsMgrAESCTRDecryptForDriver_t)(uint8_t *src, uint8_t *dst, const uint32_t size, const uint8_t *key, const uint32_t key_size, uint8_t *iv, uint32_t mask_enable);
 sceSblSsMgrAESCTRDecryptForDriver_t*            sceSblSsMgrAESCTRDecryptForDriver = NULL;
+typedef int (sceSblSsMgrSHA1ForDriver_t)(const char *src, uint8_t *dst, size_t size, uint8_t *iv, uint32_t mask_enable, uint32_t command_bit);
+sceSblSsMgrSHA1ForDriver_t*                     sceSblSsMgrSHA1ForDriver = NULL;
+
+static uint8_t empty_sha1sum[20] = {
+    0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55, 0xbf, 0xef, 0x95, 0x60, 0x18, 0x90, 0xaf, 0xd8, 0x07, 0x09
+};
 
 // Missing taihen exports
 extern int module_get_export_func(SceUID pid, const char *modname, uint32_t libnid, uint32_t funcnid, uintptr_t *func);
@@ -248,6 +256,7 @@ SceUID vpfs_open(const char *path)
         goto out;
     }
 
+    // TODO: Don't cache the local data after the directories, in case we have large data items
     int read = ksceIoRead(fd, vfd.data, stat.st_size);
     if (read != stat.st_size) {
         perr("Could not read VPFS data: 0x%08X\n", read);
@@ -283,22 +292,18 @@ int vpfs_close(SceUID fd)
     return 0;
 }
 
-bool sha1sum(const char* path, uint8_t* sum)
+int sha1sum(const char* path, uint8_t* sum)
 {
-    bool r = false;
-    // TODO: For now return the harcoded value for root path ("")
-    const uint8_t empty_sum[20] = {
-        0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55, 0xbf, 0xef, 0x95, 0x60, 0x18, 0x90, 0xaf, 0xd8, 0x07, 0x09
-    };
+    if ((sum == NULL) || (path == NULL) || (sceSblSsMgrSHA1ForDriver == NULL))
+        return SCE_KERNEL_ERROR_INVALID_ARGUMENT;
 
-    if (sum == NULL)
-        goto out;
+    if (path[0] == 0) {
+        // sceSblSsMgrSHA1ForDriver doesn't like a size of zero for the source
+        memcpy(sum, empty_sha1sum, 20);
+        return 0;
+    }
 
-    memcpy(sum, empty_sum, 20);
-    r = true;
-
-out:
-    return r;
+    return sceSblSsMgrSHA1ForDriver(path, sum, strlen(path), NULL, 1, 0);
 }
 
 vpfs_item_t* vpfs_find_item(uint8_t* vpfs, const char* path)
@@ -308,7 +313,12 @@ vpfs_item_t* vpfs_find_item(uint8_t* vpfs, const char* path)
     vpfs_header_t* header = (vpfs_header_t*)vpfs;
     uint32_t* sha_table = (uint32_t*)&vpfs[sizeof(vpfs_header_t) + header->nb_pkgs * sizeof(vpfs_pkg_t)];
 
-    sha1sum(path, sha1);
+    int r = sha1sum(path, sha1);
+    if (r < 0) {
+        perr("Could not compute SHA1: 0x%08X\n", r);
+        return NULL;
+    }
+
     uint32_t short_sha = get32be(sha1);
 
     // TODO: Speed this up through dichotomy
@@ -459,8 +469,11 @@ int module_start(SceSize argc, const void *args)
     //    SceSblSsMgrAESCTRDecryptForDriver_NID, (uintptr_t*)&sceSblSsMgrAESCTRDecryptForDriver);
     //if (r < 0)
     //    perr("Could not set sceSblSsMgrAESCTRDecryptForDriver: 0x%08X\n", r);
-    //else 
-    //    printf("sceSblSsMgrAESCTRDecryptForDriver successfully set.\n");
+
+    r = module_get_export_func(KERNEL_PID, "SceSblSsMgr", SceSblSsMgrForDriver_NID,
+        SceSblSsMgrSHA1ForDriver_NID, (uintptr_t*)&sceSblSsMgrSHA1ForDriver);
+    if (r < 0)
+        perr("Could not set sceSblSsMgrSHA1ForDriver: 0x%08X\n", r);
 
     // Set the file system hooks
     for (int i = 0; i < ARRAYSIZE(hooks); i++)

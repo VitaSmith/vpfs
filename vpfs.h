@@ -103,7 +103,7 @@ typedef struct {
     uint32_t    xsha[4];    // Last 16-bytes of the SHA-1
     uint32_t    flags;
     int32_t     pkg_index;  // < 0 if the offset is in this file (local_data), > 0  if in designated external PKG
-    uint64_t    offset;     // For directories, offset is with regards to 'local data' start.
+    uint64_t    offset;     // For directories, offset is with regards to start of file.
                             // For regular files, offset is the offset in the referenced PKG
     uint64_t    size;       // For directories, this is the size of all the NUL terminated
                             // paths that are contained in the directory
