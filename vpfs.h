@@ -112,7 +112,6 @@ typedef struct {
 
 
 #define VPFS_MAGIC              0x53465056  // 'VPFS' in little endian
-#define VPFD_MAGIC              0x44465056  // 'VPFD' in little endian
 #define VPFS_VERSION            0x00010000  // 'v1.0'
 
 // Flags

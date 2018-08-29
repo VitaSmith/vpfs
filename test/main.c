@@ -35,8 +35,8 @@
 
 #include "console.h"
 
-#define VERSION             "0.4"
-#define DIRECTORY           "ux0:app/PCSE00001/sce_sys"
+#define VERSION             "0.5"
+#define DIRECTORY           "ux0:app/PCSE00001/Disc/Car"
 #define VPFS_SKPRX          "ux0:tai/vpfs.skprx"
 #define perr(...)           do { console_set_color(RED); printf(__VA_ARGS__); console_set_color(WHITE); } while(0);
 
@@ -66,7 +66,12 @@ int main()
         goto out;
     }
     while ((r = sceIoDread(fd, &dir)) > 0) {
-        printf("o %s%s\n", dir.d_name, SCE_S_ISDIR(dir.d_stat.st_mode) ? "/" : "");
+        printf("o %s", dir.d_name);
+        if (SCE_S_ISDIR(dir.d_stat.st_mode)) {
+            printf("/\n");
+        } else {
+            printf(" (%lld bytes)\n", dir.d_stat.st_size);
+        }
     }
     if (r < 0) {
         perr("Could not read directory entry: 0x%08X\n", r);

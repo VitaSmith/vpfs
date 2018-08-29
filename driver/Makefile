@@ -19,13 +19,13 @@ debug: CFLAGS += -DSHOW_DEBUG=1
 debug: all
 
 %.skprx: %.velf
-	vita-make-fself $< $@
+	vita-make-fself -c $< $@
 
 %.velf: %.elf
 	vita-elf-create -e exports.yml $< $@
 
 $(TARGET).elf: $(OBJS)
-	$(CC) $(CFLAGS) $^ $(LIBS) -o $@ -nostdlib
+	$(CC) $(CFLAGS) $^ $(LIBS) -o $@ -nostdlib -Wl,-z,nocopyreloc
 
 install: $(TARGET).skprx
 	@rm -f /g/data/vpfs.log
