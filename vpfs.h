@@ -125,4 +125,3 @@ typedef struct {
 
 #define VPFS_ITEM_TYPE_DIR      0x10000000  // Directory flag
 #define VPFS_ITEM_DELETED       0x80000000  // Deleted flag
-#define VPFS_ITEM_OVERRIDDEN    0x40000000  // If overriden from patch or DLC. Probably not needed.

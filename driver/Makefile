@@ -1,5 +1,5 @@
 TARGET   = vpfs
-OBJS     = vpfs_driver.o
+OBJS     = driver.o
 
 LIBS = -ltaihen_stub -ltaihenForKernel_stub \
   -lSceSysmemForDriver_stub -lSceSysclibForDriver_stub \

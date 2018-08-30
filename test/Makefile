@@ -1,6 +1,6 @@
 TITLE_ID = VPFS00000
 TARGET   = vpfs_test
-OBJS     = console.o draw.o font_data.o main.o 
+OBJS     = console.o draw.o font_data.o test.o 
 
 LIBS = -lc -lSceDisplay_stub -lSceGxm_stub -lSceCtrl_stub \
 	-lSceAppUtil_stub -lSceIofilemgr_stub -lSceSysmodule_stub \

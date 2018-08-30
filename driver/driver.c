@@ -18,7 +18,7 @@
 
 #include "../vpfs.h"
 #include "../vpfs_utils.h"
-#include "vpfs_driver.h"
+#include "driver.h"
 
 #include <psp2kern/types.h>
 #include <psp2kern/kernel/modulemgr.h>
@@ -334,6 +334,24 @@ static int sha1sum(const char* path, uint8_t* sum)
     return sceSblSsMgrSHA1ForDriver(kpath, sum, strlen(path), NULL, 1, 0);
 }
 
+static const char* basename(const char* path)
+{
+    size_t index;
+
+    if (path == NULL)
+        return NULL;
+
+    for (index = strlen(path) - 1; index > 0; index--)
+    {
+        if ((path[index] == '/') || (path[index] == '\\'))
+        {
+            index++;
+            break;
+        }
+    }
+    return &path[index];
+}
+
 static vpfs_item_t* vpfs_find_item(uint8_t* vpfs, const char* path)
 {
     uint32_t i;
@@ -393,12 +411,10 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
     // Copy the user pointer to kernel space for processing
     ksceKernelStrncpyUserToKernel(path, (uintptr_t)dirname, sizeof(path) - sizeof(vpfs_ext));
     size_t len = strlen(path);
-    if (path[len - 1] != '/') {
-        path[len] = '/';
-        path[len + 1] = 0;
-    }
+    if (path[len - 1] == '/')
+        path[--len] = 0;
     for (i = len; i > 0; i--) {
-        if (path[i] == '/') {
+        if ((path[i] == '/') || (path[i] == 0)) {
             memcpy(bck, &path[i], sizeof(vpfs_ext));
             memcpy(&path[i], vpfs_ext, sizeof(vpfs_ext));
             fd = vpfs_open(path);
@@ -443,16 +459,12 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
 
 int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
 {
-    const uint8_t zero = 0;
-    int r = SCE_ERROR_ERRNO_ENOENT;
-
     if ((fd >> 16) != VPFD_MAGIC) {
-        // TODO: Insert our virtual directory into the listing
-        // How? Checking for a ".vpfs" extension may be costly...
-        r = TAI_CONTINUE(int, hooks[SCEIODREAD].ref, fd, dir);
+        // Regular directory -> use standard call while converting any '.vpfs' file to a virtual directory
+        int r = TAI_CONTINUE(int, hooks[SCEIODREAD].ref, fd, dir);
         if (r == 1) {
             // Check if one of the files has a .vpfs extension and alter its properties
-            // so that the listing application can see it as a directory.
+            // so that the querying application will see it as a virtual directory.
             char path[sizeof(dir->d_name)];
             ksceKernelMemcpyUserToKernel(path, (uintptr_t)dir->d_name, sizeof(dir->d_name));
             size_t len = strlen(path);
@@ -471,36 +483,37 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
             }
         }
 //        printf("- sceIoDread(0x%08X) [ORG]: 0x%08X\n", fd, r);
-    } else {
-        uint16_t index = (uint16_t)fd;
-        size_t len = strlen((char*)&vfd[index].data[vfd->dir_offset]);
-        if (len++ == 0) {
-            r = 0;
-        } else {
-            int i;
-            for (i = len - 3; (i > 0) && (vfd[index].data[vfd->dir_offset + i] != '/'); i--);
-            if (i != 0)
-                i++;
-            if (i < 0)
-                i = 0;
-            ksceKernelMemcpyKernelToUser((uintptr_t)dir->d_name, &vfd[index].data[vfd->dir_offset + i], len - i + 1);
-            SceIoStat stat = { 0 };
-            if (vfd[index].data[vfd[index].dir_offset + len - 2] == '/') {
-                // Remove the extra slash from our copy
-                ksceKernelMemcpyKernelToUser((uintptr_t)dir->d_name + len - i - 2, &zero, 1);
-                stat.st_mode = SCE_S_IFDIR | SCE_S_IRUSR | SCE_S_IROTH;
-            } else {
-                stat.st_mode = SCE_S_IFREG | SCE_S_IRUSR | SCE_S_IROTH;
-                vpfs_item_t* item  = vpfs_find_item(vfd->data, (const char*)&vfd[index].data[vfd->dir_offset]);
-                stat.st_size = (item == NULL) ? 0 : item->size;
-            }
-            ksceKernelMemcpyKernelToUser((uintptr_t)dir, &stat, sizeof(stat));
-            vfd[index].dir_offset += len;
-            r = 1;
-        }
-//        printf("- sceIoDread(0x%08X) [OVL]: 0x%08X\n", fd, r);
+        return r;
     }
-    return r;
+
+    // Virtual directory
+    uint16_t index = (uint16_t)fd;
+    const char* path = (const char*)&vfd[index].data[vfd->dir_offset];
+    size_t len = strlen(path);
+    if (len == 0)
+        // No more content in this directory
+        return 0;
+
+    SceIoStat stat = { 0 };
+    vpfs_item_t* item = vpfs_find_item(vfd->data, path);
+    if (item == NULL) {
+        printf("- sceIoDread('%s') [OVL]: Entry not found in .vpfs\n", path);
+        return SCE_ERROR_ERRNO_ENOENT;
+    }
+    // TODO: Check for VPFS_ITEM_DELETED and skip deleted items
+    const char* name = basename(path);
+    ksceKernelMemcpyKernelToUser((uintptr_t)dir->d_name, name, strlen(name) + 1);
+    if (item->flags & VPFS_ITEM_TYPE_DIR) {
+        stat.st_mode = SCE_S_IFDIR | SCE_S_IRUSR | SCE_S_IROTH;
+    } else {
+        stat.st_mode = SCE_S_IFREG | SCE_S_IRUSR | SCE_S_IROTH;
+        stat.st_size = item->size;
+    }
+    ksceKernelMemcpyKernelToUser((uintptr_t)dir, &stat, sizeof(stat));
+    vfd[index].dir_offset += len + 1;
+
+    //        printf("- sceIoDread(0x%08X) [OVL]: 0x%08X\n", fd, r);
+    return 1;
 }
 
 int sceIoDClose_Hook(SceUID fd)
