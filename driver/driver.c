@@ -64,6 +64,12 @@ typedef struct
     uint32_t unk_4;
 } sceIoDopenOpt;
 
+typedef struct
+{
+    uint32_t unk_0;
+    uint32_t unk_4;
+} sceIoGetstatOpt;
+
 typedef int (sceSblSsMgrAESCTRDecryptForDriver_t)(uint8_t *src, uint8_t *dst, const uint32_t size, const uint8_t *key, const uint32_t key_size, uint8_t *iv, uint32_t mask_enable);
 sceSblSsMgrAESCTRDecryptForDriver_t*            sceSblSsMgrAESCTRDecryptForDriver = NULL;
 typedef int (sceSblSsMgrSHA1ForDriver_t)(const char *src, uint8_t *dst, size_t size, uint8_t *iv, uint32_t mask_enable, uint32_t command_bit);
@@ -400,6 +406,7 @@ static vpfs_item_t* vpfs_find_item(uint8_t* vpfs, const char* path)
 #define SCEIODOPEN      0
 #define SCEIODREAD      1
 #define SCEIODCLOSE     2
+#define SCEIOGETSTAT    3
 
 typedef struct {
     void*           func;
@@ -545,10 +552,77 @@ int sceIoDClose_Hook(SceUID fd)
     return r;
 }
 
+int sceIoGetstat_Hook(const char* file, SceIoStat* stat, sceIoGetstatOpt *opt)
+{
+    int r;
+    char path[MAX_PATH + sizeof(vpfs_ext)];
+    char bck[sizeof(vpfs_ext)];
+    size_t i;
+    SceUID fd = SCE_ERROR_ERRNO_ENOENT;
+
+    // Copy the user pointer to kernel space for processing
+    ksceKernelStrncpyUserToKernel(path, (uintptr_t)file, sizeof(path) - sizeof(vpfs_ext));
+    size_t len = strlen(path);
+    if (path[len - 1] == '/')
+        path[--len] = 0;
+    for (i = len; i > 0; i--) {
+        if ((path[i] == '/') || (path[i] == 0)) {
+            memcpy(bck, &path[i], sizeof(vpfs_ext));
+            memcpy(&path[i], vpfs_ext, sizeof(vpfs_ext));
+            fd = vpfs_open(path);
+            if (fd >= 0)
+                break;
+            memcpy(&path[i], bck, sizeof(vpfs_ext));
+        }
+    }
+    if (i == 0) {
+        // Couldn't find a relevant VPFS => use the original function call
+        r = TAI_CONTINUE(SceUID, hooks[SCEIOGETSTAT].ref, file, stat, opt);
+//        printf("- sceIoGetstat('%s') [ORG]: 0x%08X\n", path, r);
+        return r;
+    }
+
+    memcpy(&path[i], bck, sizeof(vpfs_ext));
+    // We have an opened vfd -> process it
+    vfd_t* vfd = get_vfd(fd);
+    if (vfd == NULL)
+        return SCE_ERROR_ERRNO_EFAULT;
+    vpfs_item_t* item = vpfs_find_item(vfd->data, &path[i + 1]);
+    if (item == NULL) {
+        printf("- sceIoGetstat('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
+        return SCE_ERROR_ERRNO_ENOENT;
+    }
+
+    // Check our data
+    if (item->flags & VPFS_ITEM_DELETED) {
+        printf("- sceIoGetstat('%s') [OVL]: Item was deleted\n", path);
+        return SCE_ERROR_ERRNO_ENOENT;
+    }
+    SceIoStat kstat = { 0 };
+    kstat.st_ctime = vfd->pkg_time;
+    kstat.st_atime = vfd->pkg_time;
+    kstat.st_mtime = vfd->pkg_time;
+    if (item->flags & VPFS_ITEM_TYPE_DIR) {
+        kstat.st_mode = SCE_S_IFDIR | SCE_S_IRUSR | SCE_S_IROTH;
+    } else {
+        kstat.st_mode = SCE_S_IFREG | SCE_S_IRUSR | SCE_S_IROTH;
+        kstat.st_size = item->size;
+    }
+    ksceKernelMemcpyKernelToUser((uintptr_t)stat, &kstat, sizeof(kstat));
+    printf("- sceIoGetstat('%s') [OVL]: 0x%08X\n", path, 0);
+    return 0;
+}
+
+// https://wiki.henkaku.xyz/vita/SceIofilemgr
+// NB: Be mindful of the 'opt' structs in the overrides!
+// https://psp2sdk.github.io/stat_8h.html
+// https://psp2sdk.github.io/fcntl_8h.html
+
 hook_t hooks[] = {
     { sceIoDopen_Hook, 0xE6E614B5, -1, 0 },
     { sceIoDread_Hook, 0x8713D662, -1, 0 },
     { sceIoDClose_Hook, 0x422A221A, -1, 0 },
+    { sceIoGetstat_Hook, 0x8E7E11F2, -1, 0 },
 };
 
 

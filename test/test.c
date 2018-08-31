@@ -32,6 +32,7 @@
 #include <psp2/kernel/processmgr.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/io/dirent.h>
+#include <psp2/io/stat.h>
 
 #include "console.h"
 
@@ -152,6 +153,28 @@ bool test_for_file_size(char* dir, char* file, uint64_t size)
     return true;
 }
 
+bool test_stat(char* path, uint64_t size)
+{
+    SceIoStat stat = { 0 };
+    int r = sceIoGetstat(path, &stat);
+    if (r < 0) {
+        perr("Failed to get stat for '%s': Error 0x%08X\n", r);
+        return false;
+    }
+    if ((path[strlen(path) - 1] == '/') && (!SCE_S_ISDIR(stat.st_mode))) {
+        perr("'%s' is not reported as a directory\n", path);
+        return false;
+    } else if ((path[strlen(path) - 1] != '/') && (!SCE_S_ISREG(stat.st_mode))) {
+        perr("'%s' is not reported as a regular file\n", path);
+        return false;
+    }
+    if (SCE_S_ISREG(stat.st_mode) && (stat.st_size != size)) {
+        perr("Expected %lld bytes but got %lld bytes\n", size, stat.st_size);
+        return false;
+    }
+    return true;
+}
+
 #define DISPLAY_TEST(msg, func, ...) \
     r = func(__VA_ARGS__); \
     console_set_color(r ? GREEN : RED); printf(r ? "[PASS] " : "[FAIL] "); console_set_color(WHITE); printf("%s\n", msg);
@@ -174,6 +197,8 @@ int main()
         goto out;
     }
 
+    DISPLAY_TEST("Regular directory is listed in 'ux0:app'", test_for_directory, "ux0:app", "VPFS00000");
+    DISPLAY_TEST("Regular file is listed in 'ux0:app'", test_for_file_size, "ux0:app/VPFS00000/sce_sys/package", "work.bin", 512);
     DISPLAY_TEST("Virtual directory is present in 'ux0:app'", test_for_directory, "ux0:app", "PCSE00001");
     DISPLAY_TEST("Size of 'eboot.bin'", test_for_file_size, "ux0:app/PCSE00001", "eboot.bin", 1160512);
     DISPLAY_TEST("Size of 'sce_sys/param.sfo'", test_for_file_size, "ux0:app/PCSE00001/sce_sys", "param.sfo", 1988);
@@ -184,6 +209,10 @@ int main()
     DISPLAY_TEST("Content of 'ux0:app/PCSE00001'", compare_dir_list, "ux0:app/PCSE00001", root_list, ARRAYSIZE(root_list));
     DISPLAY_TEST("Content of 'ux0:app/PCSE00001/sce_sys'", compare_dir_list, "ux0:app/PCSE00001/sce_sys", sce_sys_list, ARRAYSIZE(sce_sys_list));
     DISPLAY_TEST("Content of 'ux0:app/PCSE00001/Disc/Car'", compare_dir_list, "ux0:app/PCSE00001/Disc/Car", Disc_Car_list, ARRAYSIZE(Disc_Car_list));
+    DISPLAY_TEST("Regular directory is listed in 'ux0:app' (GetStat)", test_stat, "ux0:app/VPFS00000/", 0);
+    DISPLAY_TEST("Regular file is listed in 'ux0:app' (GetStat)", test_stat, "ux0:app/VPFS00000/sce_sys/package/work.bin", 512);
+    DISPLAY_TEST("Virtual directory is present in 'ux0:app' (GetStat)", test_stat, "ux0:app/PCSE00001/", 0);
+    DISPLAY_TEST("Size of 'eboot.bin' (GetStat)", test_stat, "ux0:app/PCSE00001/eboot.bin", 1160512);
 
 out:
     if (module_id >= 0) {
