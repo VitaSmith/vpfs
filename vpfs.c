@@ -953,7 +953,7 @@ int main(int argc, char* argv[])
         item->offset = local_data_offset + dir_dump.buf_len + sizeof(stat_bin);
     }
 
-    char path[1024], *dir = (char*)dirname(pkg_arg);
+    char path[1024] = "", *dir = (char*)dirname(pkg_arg);
 
     if (dir != NULL)
     {

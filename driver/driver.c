@@ -229,26 +229,34 @@ typedef struct
     SceUID      uid;
     uint8_t*    data;
     uint32_t    dir_offset;
+    SceDateTime pkg_time;
 } vfd_t;
 
-static vfd_t    vfd[MAX_FDS] = { 0 };
+static vfd_t    vfds[MAX_FDS] = { 0 };
 static uint16_t vfd_index = 0;
 static SceUID   vfd_mutex;
 
 static uint16_t vfd_get_index(void)
 {
     ksceKernelLockMutex(vfd_mutex, 1, 0);
-    for (uint16_t i = 0; i < ARRAYSIZE(vfd); i++) {
-        if ((vfd[i].data == NULL) && (vfd[i].uid >= 0)) {
+    for (uint16_t i = 0; i < ARRAYSIZE(vfds); i++) {
+        if ((vfds[i].data == NULL) && (vfds[i].uid >= 0)) {
             // Set negative uid to prevent duplicate use of this index
             // when relinquishing the mutex
-            vfd[i].uid = -1;
+            vfds[i].uid = -1;
             ksceKernelUnlockMutex(vfd_mutex, 1);
             return i;
         }
     }
     ksceKernelUnlockMutex(vfd_mutex, 1);
     return 0xFFFF;
+}
+
+static inline vfd_t* get_vfd(SceUID fd)
+{
+    if ((fd >> 16) != VPFD_MAGIC)
+        return NULL;
+    return ((uint16_t)fd < MAX_FDS) ? &vfds[(uint16_t)fd] : NULL;
 }
 
 static SceUID vpfs_open(const char *path)
@@ -291,9 +299,11 @@ static SceUID vpfs_open(const char *path)
     }
 
     uint16_t index = vfd_get_index();
-    vfd[index].uid = uid;
-    vfd[index].data = data;
-    strncpy(vfd[index].path, path, sizeof(vfd[index].path));
+    vfd_t* vfd = &vfds[index];
+    vfd->uid = uid;
+    vfd->data = data;
+    vfd->pkg_time = stat.st_ctime;
+    strncpy(vfd->path, path, sizeof(vfd->path));
     r = (VPFD_MAGIC << 16) | index;
 
 out:
@@ -306,13 +316,13 @@ out:
 
 static int vpfs_close(SceUID fd)
 {
-    if ((fd >> 16) != VPFD_MAGIC)
+    vfd_t* vfd = get_vfd(fd);
+    if (vfd == NULL)
         return SCE_ERROR_ERRNO_EACCES;
-    uint16_t index = (uint16_t)fd;
-    if (vfd[index].uid >= 0)
-        kfree(vfd[index].uid);
-    vfd[index].uid = 0;
-    vfd[index].data = NULL;
+    if (vfd->uid >= 0)
+        kfree(vfd->uid);
+    vfd->uid = 0;
+    vfd->data = NULL;
     return 0;
 }
 
@@ -432,8 +442,10 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
 
     memcpy(&path[i], bck, sizeof(vpfs_ext));
     // We have an opened vfd -> process it
-    uint16_t index = (uint16_t)fd;
-    vpfs_item_t* item = vpfs_find_item(vfd[index].data, &path[i + 1]);
+    vfd_t* vfd = get_vfd(fd);
+    if (vfd == NULL)
+        return SCE_ERROR_ERRNO_EFAULT;
+    vpfs_item_t* item = vpfs_find_item(vfd->data, &path[i + 1]);
     if (item == NULL) {
         printf("- sceIoDopen('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
         return SCE_ERROR_ERRNO_ENOENT;
@@ -452,14 +464,15 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
         printf("- sceIoDopen('%s') [OVL]: Directory offset is not in VPFS file\n", path);
         return SCE_ERROR_ERRNO_EFAULT;
     }
-    vfd[index].dir_offset = (uint32_t)item->offset;
+    vfd->dir_offset = (uint32_t)item->offset;
     printf("- sceIoDopen('%s') [OVL]: 0x%08X\n", path, fd);
     return fd;
 }
 
 int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
 {
-    if ((fd >> 16) != VPFD_MAGIC) {
+    vfd_t* vfd = get_vfd(fd);
+    if (vfd == NULL) {
         // Regular directory -> use standard call while converting any '.vpfs' file to a virtual directory
         int r = TAI_CONTINUE(int, hooks[SCEIODREAD].ref, fd, dir);
         if (r == 1) {
@@ -487,8 +500,7 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
     }
 
     // Virtual directory
-    uint16_t index = (uint16_t)fd;
-    const char* path = (const char*)&vfd[index].data[vfd->dir_offset];
+    const char* path = (const char*)&vfd->data[vfd->dir_offset];
     size_t len = strlen(path);
     if (len == 0)
         // No more content in this directory
@@ -503,6 +515,9 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
     // TODO: Check for VPFS_ITEM_DELETED and skip deleted items
     const char* name = basename(path);
     ksceKernelMemcpyKernelToUser((uintptr_t)dir->d_name, name, strlen(name) + 1);
+    stat.st_ctime = vfd->pkg_time;
+    stat.st_atime = vfd->pkg_time;
+    stat.st_mtime = vfd->pkg_time;
     if (item->flags & VPFS_ITEM_TYPE_DIR) {
         stat.st_mode = SCE_S_IFDIR | SCE_S_IRUSR | SCE_S_IROTH;
     } else {
@@ -510,16 +525,17 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
         stat.st_size = item->size;
     }
     ksceKernelMemcpyKernelToUser((uintptr_t)dir, &stat, sizeof(stat));
-    vfd[index].dir_offset += len + 1;
+    vfd->dir_offset += len + 1;
 
-    //        printf("- sceIoDread(0x%08X) [OVL]: 0x%08X\n", fd, r);
+//    printf("- sceIoDread(0x%08X) [OVL]: '%s'\n", fd, name);
     return 1;
 }
 
 int sceIoDClose_Hook(SceUID fd)
 {
     int r = SCE_ERROR_ERRNO_ENOENT;
-    if ((fd >> 16) != VPFD_MAGIC) {
+    vfd_t* vfd = get_vfd(fd);
+    if (vfd == NULL) {
         r = TAI_CONTINUE(int, hooks[SCEIODCLOSE].ref, fd);
 //        printf("- sceIoDClose(0x%08X) [ORG]: 0x%08X\n", fd, r);
     } else {

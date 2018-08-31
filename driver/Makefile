@@ -10,7 +10,7 @@ LIBS = -ltaihen_stub -ltaihenForKernel_stub \
 
 PREFIX  = arm-vita-eabi
 CC      = $(PREFIX)-gcc
-CFLAGS  = -Wl,-q -Wall -O3 -Wno-unused-variable -Wno-unused-but-set-variable -Wno-format -Wno-strict-aliasing -Wno-attributes -std=gnu99 -iquote -DNO_DYNAMIC_LINKER_STUFF -DNO_PTHREADS
+CFLAGS  = -Wl,-q -Wall -O3 -Wno-unused-variable -Wno-unused-but-set-variable -Wno-format -Wno-strict-aliasing -Wno-attributes -Wno-stringop-overflow -std=gnu99 -iquote -DNO_DYNAMIC_LINKER_STUFF -DNO_PTHREADS
 ASFLAGS = $(CFLAGS)
 
 all: $(TARGET).skprx
