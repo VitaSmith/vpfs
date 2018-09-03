@@ -19,6 +19,3 @@ CMakeCache.txt
 Win32
 Win64
 vpfs
-driver/CMakeFiles
-driver/Makefile
-driver/vpfs-stubs*

@@ -20,15 +20,11 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <inttypes.h>
 #include <string.h>
 #include <taihen.h>
 
 #include <psp2/ctrl.h>
-#include <psp2/sqlite.h>
 #include <psp2/display.h>
-#include <psp2/apputil.h>
-#include <psp2/sysmodule.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/io/dirent.h>
@@ -37,10 +33,11 @@
 #include "console.h"
 
 #define VERSION             "0.6"
-#define DIRECTORY           "ux0:app/PCSE00001/sce_sys"
 #define VPFS_SKPRX          "ux0:tai/vpfs.skprx"
 #define ARRAYSIZE(A)        (sizeof(A)/sizeof((A)[0]))
 #define perr(...)           do { console_set_color(RED); printf(__VA_ARGS__); console_set_color(WHITE); } while(0);
+
+SceUID module_id = -1;
 
 char* root_list[] = {
     "sce_sys/",
@@ -74,8 +71,29 @@ char* Disc_Car_list[] = {
     "Car_07/",
 };
 
+static bool module_load(void)
+{
+    module_id = taiLoadStartKernelModule(VPFS_SKPRX, 0, NULL, 0);
+    if (module_id < 0) {
+        perr("Could not load kernel module: 0x%08X\n", module_id);
+        return false;
+    }
+    return true;
+}
 
-SceIoStat* get_dir_entry_stat(const char* path, const char* entry)
+static bool module_unload(void)
+{
+    if (module_id < 0)
+        return false;
+    int r = taiStopUnloadKernelModule(module_id, 0, NULL, 0, NULL, NULL);
+    if (r < 0) {
+        perr("Could not unload kernel module: 0x%08X\n", r);
+        return false;
+    }
+    return true;
+}
+
+static SceIoStat* get_dir_entry_stat(const char* path, const char* entry)
 {
     static SceIoDirent dir;
     memset(&dir, 0, sizeof(dir));
@@ -92,7 +110,7 @@ SceIoStat* get_dir_entry_stat(const char* path, const char* entry)
     return NULL;
 }
 
-bool compare_dir_list(char* path, char** list, size_t len)
+static bool compare_dir_list(char* path, char** list, size_t len)
 {
     static SceIoDirent dir;
     memset(&dir, 0, sizeof(dir));
@@ -125,7 +143,7 @@ bool compare_dir_list(char* path, char** list, size_t len)
     return true;
 }
 
-bool test_for_directory(char* dir, char* subdir)
+static bool test_for_directory(char* dir, char* subdir)
 {
     SceIoStat* stat = get_dir_entry_stat(dir, subdir);
     if (stat == NULL)
@@ -135,7 +153,7 @@ bool test_for_directory(char* dir, char* subdir)
     return true;
 }
 
-bool test_for_file_size(char* dir, char* file, uint64_t size)
+static bool test_for_file_size(char* dir, char* file, uint64_t size)
 {
     SceIoStat* stat = get_dir_entry_stat(dir, file);
     if (stat == NULL) {
@@ -153,12 +171,12 @@ bool test_for_file_size(char* dir, char* file, uint64_t size)
     return true;
 }
 
-bool test_stat(char* path, uint64_t size)
+static bool test_stat(char* path, uint64_t size)
 {
     SceIoStat stat = { 0 };
     int r = sceIoGetstat(path, &stat);
     if (r < 0) {
-        perr("Failed to get stat for '%s': Error 0x%08X\n", r);
+        perr("Failed to get stat for '%s': Error 0x%08X\n", path, r);
         return false;
     }
     if ((path[strlen(path) - 1] == '/') && (!SCE_S_ISDIR(stat.st_mode))) {
@@ -175,14 +193,44 @@ bool test_stat(char* path, uint64_t size)
     return true;
 }
 
+static bool test_vpfs_file(char* path)
+{
+    SceIoStat stat = { 0 };
+    int r = sceIoGetstat(path, &stat);
+    if (r < 0) {
+        perr("'%s' is not present\n", path);
+        return false;
+    }
+    // TODO: Open VPFS file and check header
+    return true;
+}
+
+static bool test_open_file(char* path)
+{
+    SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0777);
+    if (fd < 0) {
+        perr("Could not open '%s': 0x%08X\n", path, fd);
+        return false;
+    }
+    int r = sceIoClose(fd);
+    if (r < 0) {
+        perr("Could not close '%s': 0x%08X\n", path, r);
+        return false;
+    }
+    return true;
+}
+
 #define DISPLAY_TEST(msg, func, ...) \
     r = func(__VA_ARGS__); \
-    console_set_color(r ? GREEN : RED); printf(r ? "[PASS] " : "[FAIL] "); console_set_color(WHITE); printf("%s\n", msg);
+    console_set_color(r ? GREEN : RED); printf(r ? "[PASS] " : "[FAIL] "); console_set_color(WHITE); printf("%s\n", msg)
+
+#define DISPLAY_TEST_OR_OUT(msg, func, ...) \
+    DISPLAY_TEST(msg, func, __VA_ARGS__); \
+    if (!r) goto out
 
 int main()
 {
     int r = -1;
-    SceUID module_id = -1;
     SceCtrlData pad;
 
     init_video();
@@ -191,12 +239,8 @@ int main()
     printf("vpfs_test v" VERSION " - Vita PKG Filesystem tester\n");
     printf("Copyright (c) 2018 VitaSmith (GPLv3)\n\n");
 
-    module_id = taiLoadStartKernelModule(VPFS_SKPRX, 0, NULL, 0);
-    if (module_id < 0) {
-        perr("Could not load kernel module: 0x%08X\n", module_id);
-        goto out;
-    }
-
+    DISPLAY_TEST_OR_OUT("VPFS file is present", test_vpfs_file, "ux0:app/PCSE00001.vpfs");
+    DISPLAY_TEST_OR_OUT("VPFS module can be loaded", module_load);
     DISPLAY_TEST("Regular directory is listed in 'ux0:app'", test_for_directory, "ux0:app", "VPFS00000");
     DISPLAY_TEST("Regular file is listed in 'ux0:app'", test_for_file_size, "ux0:app/VPFS00000/sce_sys/package", "work.bin", 512);
     DISPLAY_TEST("Virtual directory is present in 'ux0:app'", test_for_directory, "ux0:app", "PCSE00001");
@@ -213,13 +257,10 @@ int main()
     DISPLAY_TEST("Regular file is listed in 'ux0:app' (GetStat)", test_stat, "ux0:app/VPFS00000/sce_sys/package/work.bin", 512);
     DISPLAY_TEST("Virtual directory is present in 'ux0:app' (GetStat)", test_stat, "ux0:app/PCSE00001/", 0);
     DISPLAY_TEST("Size of 'eboot.bin' (GetStat)", test_stat, "ux0:app/PCSE00001/eboot.bin", 1160512);
+    DISPLAY_TEST("Open 'eboot.bin'", test_open_file, "ux0:app/PCSE00001/eboot.bin");
+    DISPLAY_TEST("VPFS module can be unloaded", module_unload);
 
 out:
-    if (module_id >= 0) {
-        r = taiStopUnloadKernelModule(module_id, 0, NULL, 0, NULL, NULL);
-        if (r < 0)
-            perr("Could not unload kernel module: 0x%08X\n", r);
-    }
     console_set_color(CYAN);
     printf("\nPress X to exit.\n");
     do {
