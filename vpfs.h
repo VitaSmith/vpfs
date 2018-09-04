@@ -55,16 +55,13 @@
   - (short) path -> SHA-1 (short means "ux0:app/TITLE_ID/" is removed)
   - SHA-1 index = pkg_item index
   Ultimately, we'll want to sort the SHA-1 and do a *PROPER* lookup, by starting at the most
-  appropriate position in our table and dichotomizing the shit out of our search. Probably also
-  want to speed things up through using uint64_t for lookup (though memcmp is probably
-  optimised enough). If SHA-1 not found in our tables, hand over to the original call.
+  appropriate position in our table and dichotomizing the shit out of our search.
+  If SHA-1 not found in our tables, we hand over to the original call.
 
   For dir entries:
-  - Add trailing '/' to path if missing
   - SHA-1 of directory path -> pkg_entry (should also have type dir)
   - offset = start of directory entries in names table (concatenation of NUL terminated strings)
   - offset + size = end of directory entries in path tables
-  - to find out if entry is file or dir check for terminating /
 
   TODO!!!: We're screwed if we try to mix real content with our content when listing dir entries...
            Or, are we? Can still try to call org call after we're done, which should list both our
@@ -73,9 +70,6 @@
 
   TODO: Calls MUST be reentrant as we may have multiple threads accessing the same app (and
         potentially the same item!) => anything we'd like static must go into the private fd data.
-
-  For stat:
-  - All items always have the same date as the PKG
  */
 
 // Why SHA-1 rather than MD5?
@@ -87,9 +81,9 @@ typedef struct {
     uint32_t    version;
     uint32_t    nb_pkgs;
     uint32_t    nb_items;
+    uint32_t    size;     // Size of the VPFS, with directory listings but *without* any additional data
 } vpfs_header_t;
 
-// TODO: for sceIoStat, return the date of the pkg
 typedef struct {
     uint32_t    type;
     uint32_t    flags;

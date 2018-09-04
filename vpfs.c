@@ -946,6 +946,9 @@ int main(int argc, char* argv[])
     vpfs_item_t* item = vpfs_find_item(&vpfs, "sce_sys/package/stat.bin");
     assert(item != NULL);
     item->offset = local_data_offset + dir_dump.buf_len;
+    // Keep a copy of the VPFS size, up to the extra data, to help
+    // with the caching we do in the Vita kernel module.
+    vpfs.header.size = (uint32_t)item->offset;
     if ((type == PKG_TYPE_VITA_APP || type == PKG_TYPE_VITA_DLC) && (zrif_arg != NULL))
     {
         item = vpfs_find_item(&vpfs, "sce_sys/package/work.bin");

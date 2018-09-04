@@ -1,5 +1,5 @@
 /*
-  VPFS - Vita PKG File System, kernel driver
+  VPFS - Vita PKG File System, kernel module
   Copyright © 2018 VitaSmith
 
   This program is free software: you can redistribute it and/or modify

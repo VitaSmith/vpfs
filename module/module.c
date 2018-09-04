@@ -1,5 +1,5 @@
 /*
-  VPFS - Vita PKG File System, kernel driver
+  VPFS - Vita PKG File System, kernel module
   Copyright © 2018 VitaSmith
 
   This program is free software: you can redistribute it and/or modify
@@ -39,8 +39,7 @@
 
 #define LOG_PATH                                "ux0:data/vpfs.log"
 #define ROUNDUP(n, width)                       (((n) + (width) - 1) & (~(unsigned int)((width) - 1)))
-#define ONE_KB_SIZE                             1024
-#define ONE_MB_SIZE                             (1024 * 1024)
+#define ROUNDUP_SIZE                            4096    // Malloc size for kernel must be a multiple of 4K
 #define ARRAYSIZE(A)                            (sizeof(A)/sizeof((A)[0]))
 #define MAX_PATH                                122
 // TODO: Increase this for apps with loads of DLC
@@ -102,7 +101,7 @@ static void log_print(const char* msg)
 int kalloc(const char* path, uint32_t size, SceUID* uid, uint8_t** dest)
 {
     int r;
-    *uid = ksceKernelAllocMemBlock(path, SCE_KERNEL_MEMBLOCK_TYPE_KERNEL_RW, ROUNDUP(size, ONE_KB_SIZE), 0);
+    *uid = ksceKernelAllocMemBlock(path, SCE_KERNEL_MEMBLOCK_TYPE_KERNEL_RW, ROUNDUP(size, ROUNDUP_SIZE), 0);
     if (*uid < 0) {
         perr("kalloc: Could not allocate buffer: 0x%08X (size: 0x%X)\n", *uid, size);
         return *uid;
@@ -264,15 +263,12 @@ static int vpkg_open(const char *path)
     for (int i = 0; i < MAX_VPKG; i++) {
         if (vpkgs[i].path[0] == 0) {
             uint8_t* data;
+            vpfs_header_t header;
             SceIoStat stat;
 
             // First, check if the VPFS path exists and is a regular file
             if ((ksceIoGetstat(path, &stat) < 0) || (!SCE_S_ISREG(stat.st_mode)))
                 return SCE_ERROR_ERRNO_ENOENT;
-
-            // Allocate memory to cache the VPFS data
-            if (kalloc(path, stat.st_size, &vpkgs[i].kalloc_uid, &data) < 0)
-                return SCE_ERROR_ERRNO_ENOMEM;
 
             SceUID fd = ksceIoOpen(path, SCE_O_RDONLY, 0);
             if (fd < 0) {
@@ -288,20 +284,35 @@ static int vpkg_open(const char *path)
                 return SCE_ERROR_ERRNO_EACCES;
             }
 
-            // TODO: Don't cache the local data after the directories, in case we have large data items
-            int read = ksceIoRead(fd, data, stat.st_size);
-            if (read != stat.st_size) {
-                perr("Could not read VPFS data: 0x%08X\n", read);
+            // Read the header to find the size of the data we need to cache
+            int read = ksceIoRead(fd, &header, sizeof(header));
+            if (read != sizeof(header)) {
+                perr("Could not read VPFS header: 0x%08X\n", read);
                 ksceIoClose(fd);
-                kfree(vpkgs[i].kalloc_uid);
                 return SCE_ERROR_ERRNO_EIO;
             }
-            ksceIoClose(fd);
-            vpfs_header_t* header = (vpfs_header_t*)data;
-            if (header->magic != VPFS_MAGIC) {
+
+            if (header.magic != VPFS_MAGIC) {
                 perr("Invalid VPFS magic\n");
-                kfree(vpkgs[i].kalloc_uid);
+                ksceIoClose(fd);
                 return SCE_ERROR_ERRNO_EACCES;
+            }
+
+            // Allocate memory to cache the VPFS data.
+            // Note that we don't cache any data past the directory listing.
+            if (kalloc(path, (SceOff)header.size, &vpkgs[i].kalloc_uid, &data) < 0) {
+                ksceIoClose(fd);
+                return SCE_ERROR_ERRNO_ENOMEM;
+            }
+            memcpy(data, &header, sizeof(header));
+
+            // Now copy the rest of the data
+            read = ksceIoRead(fd, &data[sizeof(header)], header.size - sizeof(header));
+            ksceIoClose(fd);
+            if (read != (header.size - sizeof(header))) {
+                perr("Could not read VPFS data: 0x%08X\n", read);
+                kfree(vpkgs[i].kalloc_uid);
+                return SCE_ERROR_ERRNO_EIO;
             }
 
             vpkgs[i].refcount = 1;
