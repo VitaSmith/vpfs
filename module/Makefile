@@ -1,5 +1,5 @@
 TARGET   = vpfs
-OBJS     = driver.o
+OBJS     = module.o
 
 LIBS = -ltaihen_stub -ltaihenForKernel_stub \
   -lSceSysmemForDriver_stub -lSceSysclibForDriver_stub \
@@ -10,7 +10,8 @@ LIBS = -ltaihen_stub -ltaihenForKernel_stub \
 
 PREFIX  = arm-vita-eabi
 CC      = $(PREFIX)-gcc
-CFLAGS  = -Wl,-q -Wall -O3 -Wno-unused-variable -Wno-unused-but-set-variable -Wno-format -Wno-strict-aliasing -Wno-attributes -Wno-stringop-overflow -std=gnu99 -iquote -DNO_DYNAMIC_LINKER_STUFF -DNO_PTHREADS
+CFLAGS  = -Wl,-q -Wall -O3 -Wno-unused-variable -Wno-unused-but-set-variable -Wno-format -Wno-strict-aliasing -Wno-attributes -Wno-stringop-overflow -std=gnu99 -iquote -DNO_DYNAMIC_LINKER_STUFF -DNO_PTHREADS -I..
+LDFLAGS = -nostdlib -Wl,-z,nocopyreloc
 ASFLAGS = $(CFLAGS)
 
 all: $(TARGET).skprx
@@ -25,7 +26,7 @@ debug: all
 	vita-elf-create -e exports.yml $< $@
 
 $(TARGET).elf: $(OBJS)
-	$(CC) $(CFLAGS) $^ $(LIBS) -o $@ -nostdlib -Wl,-z,nocopyreloc
+	$(CC) $(CFLAGS) $^ $(LIBS) -o $@ $(LDFLAGS)
 
 install: $(TARGET).skprx
 	@rm -f /g/data/vpfs.log

@@ -17,9 +17,9 @@
 */
 
 #define _PSP2_KERNEL_CLIB_H_
-#include "../vpfs.h"
-#include "../vpfs_utils.h"
-#include "driver.h"
+#include "vpfs.h"
+#include "vpfs_utils.h"
+#include "module.h"
 
 #include <psp2kern/types.h>
 #include <psp2kern/kernel/modulemgr.h>
@@ -43,7 +43,9 @@
 #define ONE_MB_SIZE                             (1024 * 1024)
 #define ARRAYSIZE(A)                            (sizeof(A)/sizeof((A)[0]))
 #define MAX_PATH                                122
-#define MAX_FDS                                 16
+// TODO: Increase this for apps with loads of DLC
+#define MAX_VPKG                                16
+#define MAX_FD                                  256
 #define VPFD_MAGIC                              0x5FF5
 
 #define SCE_ERROR_ERRNO_ENOENT                  0x80010002
@@ -52,6 +54,7 @@
 #define SCE_ERROR_ERRNO_EACCES                  0x8001000D
 #define SCE_ERROR_ERRNO_EFAULT                  0x8001000E
 #define SCE_ERROR_ERRNO_ENOTDIR                 0x80010014
+#define SCE_ERROR_ERRNO_ENFILE                  0x80010017
 #define SCE_ERROR_ERRNO_EROFS                   0x8001001E
 #define SCE_KERNEL_ERROR_INVALID_ARGUMENT       0x80020003
 
@@ -227,28 +230,115 @@ out:
 
 typedef struct
 {
-    // TODO: path, uid and data should be a separate struct
-    // we point to so that we can have multiple fds using the
-    // same underlying vpfs. Especially important for deletion!
     char        path[MAX_PATH + sizeof(vpfs_ext)];
-    SceUID      uid;
+    SceUID      kalloc_uid;
     uint8_t*    data;
-    uint32_t    dir_offset;
     SceDateTime pkg_time;
+    uint32_t    refcount;
+} vpkg_t;
+
+typedef struct
+{
+    vpkg_t*     vpkg;
+    uint32_t    dir_offset;
 } vfd_t;
 
-static vfd_t    vfds[MAX_FDS] = { 0 };
+static vpkg_t   vpkgs[MAX_VPKG] = { 0 };
+static vfd_t    vfds[MAX_FD] = { 0 };
 static uint16_t vfd_index = 0;
-static SceUID   vfd_mutex;
+static SceUID   vfd_mutex = -1, vpkg_mutex = -1;
+
+static int vpkg_open(const char *path)
+{
+    // Try to find an existing opened cached VPFS and return its index if found
+    for (int i = 0; i < MAX_VPKG; i++) {
+        if (strcmp(path, vpkgs[i].path) == 0) {
+            ksceKernelLockMutex(vpkg_mutex, 1, 0);
+            vpkgs[i].refcount++;
+            ksceKernelUnlockMutex(vpkg_mutex, 1);
+            return i;
+        }
+    }
+    // Not alreay open -> Try to create a new one
+    ksceKernelLockMutex(vpkg_mutex, 1, 0);
+    for (int i = 0; i < MAX_VPKG; i++) {
+        if (vpkgs[i].path[0] == 0) {
+            uint8_t* data;
+            SceIoStat stat;
+
+            // First, check if the VPFS path exists and is a regular file
+            if ((ksceIoGetstat(path, &stat) < 0) || (!SCE_S_ISREG(stat.st_mode)))
+                return SCE_ERROR_ERRNO_ENOENT;
+
+            // Allocate memory to cache the VPFS data
+            if (kalloc(path, stat.st_size, &vpkgs[i].kalloc_uid, &data) < 0)
+                return SCE_ERROR_ERRNO_ENOMEM;
+
+            SceUID fd = ksceIoOpen(path, SCE_O_RDONLY, 0);
+            if (fd < 0) {
+                perr("Could not open '%s': 0x%08X\n", path, fd);
+                kfree(vpkgs[i].kalloc_uid);
+                return fd;
+            }
+            // Sanity check
+            if (stat.st_size < sizeof(vpfs_header_t) + sizeof(vpfs_pkg_t) + sizeof(uint32_t) + sizeof(vpfs_item_t)) {
+                perr("VPFS file is too small\n");
+                ksceIoClose(fd);
+                kfree(vpkgs[i].kalloc_uid);
+                return SCE_ERROR_ERRNO_EACCES;
+            }
+
+            // TODO: Don't cache the local data after the directories, in case we have large data items
+            int read = ksceIoRead(fd, data, stat.st_size);
+            if (read != stat.st_size) {
+                perr("Could not read VPFS data: 0x%08X\n", read);
+                ksceIoClose(fd);
+                kfree(vpkgs[i].kalloc_uid);
+                return SCE_ERROR_ERRNO_EIO;
+            }
+            ksceIoClose(fd);
+            vpfs_header_t* header = (vpfs_header_t*)data;
+            if (header->magic != VPFS_MAGIC) {
+                perr("Invalid VPFS magic\n");
+                kfree(vpkgs[i].kalloc_uid);
+                return SCE_ERROR_ERRNO_EACCES;
+            }
+
+            vpkgs[i].refcount = 1;
+            vpkgs[i].data = data;
+            vpkgs[i].pkg_time = stat.st_ctime;
+            strncpy(vpkgs[i].path, path, sizeof(vpkgs[i].path));
+            ksceKernelUnlockMutex(vpkg_mutex, 1);
+            return i;
+        }
+    }
+    // All vpkgs slots are taken
+    ksceKernelUnlockMutex(vpkg_mutex, 1);
+    return SCE_ERROR_ERRNO_ENFILE;
+}
+
+static void vpkg_close(vpkg_t* vpkg)
+{
+    ksceKernelLockMutex(vpkg_mutex, 1, 0);
+    vpkg->refcount--;
+    if (vpkg->refcount == 0) {
+        if (vpkg->kalloc_uid >= 0)
+            kfree(vpkg->kalloc_uid);
+        vpkg->kalloc_uid = 0;
+        vpkg->data = NULL;
+        vpkg->path[0] = 0;
+    }
+    ksceKernelUnlockMutex(vpkg_mutex, 1);
+}
 
 static uint16_t vfd_get_index(void)
 {
     ksceKernelLockMutex(vfd_mutex, 1, 0);
     for (uint16_t i = 0; i < ARRAYSIZE(vfds); i++) {
-        if ((vfds[i].data == NULL) && (vfds[i].uid >= 0)) {
-            // Set negative uid to prevent duplicate use of this index
-            // when relinquishing the mutex
-            vfds[i].uid = -1;
+        if (vfds[i].vpkg == NULL) {
+            // Set to non NULL to prevent duplicate use of this index
+            // after relinquishing the mutex
+            vfds[i].vpkg = (vpkg_t*)-1;
             ksceKernelUnlockMutex(vfd_mutex, 1);
             return i;
         }
@@ -261,62 +351,22 @@ static inline vfd_t* get_vfd(SceUID fd)
 {
     if ((fd >> 16) != VPFD_MAGIC)
         return NULL;
-    return ((uint16_t)fd < MAX_FDS) ? &vfds[(uint16_t)fd] : NULL;
+    return ((uint16_t)fd < MAX_FD) ? &vfds[(uint16_t)fd] : NULL;
 }
 
 static SceUID vpfs_open(const char *path)
 {
-    uint8_t* data;
-    SceUID uid = -1, fd = -1, r = SCE_ERROR_ERRNO_ENOENT;
-    SceIoStat stat;
-
-    // First, check if the VPFS path exists and is a regular file
-    if ((ksceIoGetstat(path, &stat) < 0) || (!SCE_S_ISREG(stat.st_mode)))
-        return SCE_ERROR_ERRNO_ENOENT;
-
-    // Allocate memory to cache the VPFS data
-    if (kalloc(path, stat.st_size, &uid, &data) < 0)
-        return SCE_ERROR_ERRNO_ENOMEM;
-
-    fd = ksceIoOpen(path, SCE_O_RDONLY, 0);
-    if (fd < 0) {
-        perr("Could not open '%s': 0x%08X\n", path, fd);
-        goto out;
-    }
-    // Sanity check
-    if (stat.st_size < sizeof(vpfs_header_t) + sizeof(vpfs_pkg_t) + sizeof(uint32_t) + sizeof(vpfs_item_t)) {
-        perr("VPFS file is too small\n");
-        goto out;
-    }
-
-    // TODO: Don't cache the local data after the directories, in case we have large data items
-    int read = ksceIoRead(fd, data, stat.st_size);
-    if (read != stat.st_size) {
-        perr("Could not read VPFS data: 0x%08X\n", read);
-        r = SCE_ERROR_ERRNO_EIO;
-        goto out;
-    }
-    vpfs_header_t* header = (vpfs_header_t*)data;
-    if (header->magic != VPFS_MAGIC) {
-        perr("Invalid VPFS magic\n");
-        r = SCE_ERROR_ERRNO_EACCES;
-        goto out;
-    }
-
+    int vpkg_index = vpkg_open(path);
+    if (vpkg_index < 0)
+        return (SceUID)vpkg_index;
     uint16_t index = vfd_get_index();
-    vfd_t* vfd = &vfds[index];
-    vfd->uid = uid;
-    vfd->data = data;
-    vfd->pkg_time = stat.st_ctime;
-    strncpy(vfd->path, path, sizeof(vfd->path));
-    r = (VPFD_MAGIC << 16) | index;
-
-out:
-    if (fd >= 0)
-        ksceIoClose(fd);
-    if ((r < 0) && (uid >= 0))
-        kfree(uid);
-    return r;
+    vfd_t* vfd = (index == 0xFFFF) ? NULL : &vfds[index];
+    if (vfd == NULL) {
+        vpkg_close(&vpkgs[vpkg_index]);
+        return SCE_ERROR_ERRNO_ENFILE;
+    }
+    vfd->vpkg = &vpkgs[vpkg_index];
+    return (VPFD_MAGIC << 16) | index;
 }
 
 static int vpfs_close(SceUID fd)
@@ -324,10 +374,10 @@ static int vpfs_close(SceUID fd)
     vfd_t* vfd = get_vfd(fd);
     if (vfd == NULL)
         return SCE_ERROR_ERRNO_EACCES;
-    if (vfd->uid >= 0)
-        kfree(vfd->uid);
-    vfd->uid = 0;
-    vfd->data = NULL;
+    ksceKernelLockMutex(vfd_mutex, 1, 0);
+    vpkg_close(vfd->vpkg);
+    vfd->vpkg = NULL;
+    ksceKernelUnlockMutex(vfd_mutex, 1);
     return 0;
 }
 
@@ -455,9 +505,11 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
     memcpy(&path[i], bck, sizeof(vpfs_ext));
     // We have an opened vfd -> process it
     vfd_t* vfd = get_vfd(fd);
-    if (vfd == NULL)
-        return SCE_ERROR_ERRNO_EFAULT;
-    vpfs_item_t* item = vpfs_find_item(vfd->data, &path[i + 1]);
+    if (vfd == NULL) {
+        fd = SCE_ERROR_ERRNO_EFAULT;
+        goto out;
+    }
+    vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
     if (item == NULL) {
         printf("- sceIoDopen('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
         fd = SCE_ERROR_ERRNO_ENOENT;
@@ -523,7 +575,7 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
     }
 
     // Virtual directory
-    const char* path = (const char*)&vfd->data[vfd->dir_offset];
+    const char* path = (const char*)&vfd->vpkg->data[vfd->dir_offset];
     size_t len = strlen(path);
     if (len == 0) {
         // No more content in this directory
@@ -532,7 +584,7 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
     }
 
     SceIoStat stat = { 0 };
-    vpfs_item_t* item = vpfs_find_item(vfd->data, path);
+    vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, path);
     if (item == NULL) {
         printf("- sceIoDread('%s') [OVL]: Entry not found in .vpfs\n", path);
         r = SCE_ERROR_ERRNO_ENOENT;
@@ -541,9 +593,9 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
     // TODO: Check for VPFS_ITEM_DELETED and skip deleted items
     const char* name = basename(path);
     ksceKernelMemcpyKernelToUser((uintptr_t)dir->d_name, name, strlen(name) + 1);
-    stat.st_ctime = vfd->pkg_time;
-    stat.st_atime = vfd->pkg_time;
-    stat.st_mtime = vfd->pkg_time;
+    stat.st_ctime = vfd->vpkg->pkg_time;
+    stat.st_atime = vfd->vpkg->pkg_time;
+    stat.st_mtime = vfd->vpkg->pkg_time;
     if (item->flags & VPFS_ITEM_TYPE_DIR) {
         stat.st_mode = SCE_S_IFDIR | SCE_S_IRUSR | SCE_S_IROTH;
     } else {
@@ -616,7 +668,7 @@ int sceIoGetstat_Hook(const char* file, SceIoStat* stat, sceIoGetstatOpt *opt)
         r = SCE_ERROR_ERRNO_EFAULT;
         goto out;
     }
-    vpfs_item_t* item = vpfs_find_item(vfd->data, &path[i + 1]);
+    vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
     if (item == NULL) {
         printf("- sceIoGetstat('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
         r = SCE_ERROR_ERRNO_ENOENT;
@@ -630,9 +682,9 @@ int sceIoGetstat_Hook(const char* file, SceIoStat* stat, sceIoGetstatOpt *opt)
         goto out;
     }
     SceIoStat kstat = { 0 };
-    kstat.st_ctime = vfd->pkg_time;
-    kstat.st_atime = vfd->pkg_time;
-    kstat.st_mtime = vfd->pkg_time;
+    kstat.st_ctime = vfd->vpkg->pkg_time;
+    kstat.st_atime = vfd->vpkg->pkg_time;
+    kstat.st_mtime = vfd->vpkg->pkg_time;
     if (item->flags & VPFS_ITEM_TYPE_DIR) {
         kstat.st_mode = SCE_S_IFDIR | SCE_S_IRUSR | SCE_S_IROTH;
     } else {
@@ -692,7 +744,7 @@ SceUID sceIoOpen_Hook(const char *filename, int flag, SceIoMode mode, sceIoOpenO
         fd = SCE_ERROR_ERRNO_EFAULT;
         goto out;
     }
-    vpfs_item_t* item = vpfs_find_item(vfd->data, &path[i + 1]);
+    vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
     if (item == NULL) {
         printf("- sceIoOpen('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
         fd = SCE_ERROR_ERRNO_ENOENT;
@@ -705,6 +757,9 @@ SceUID sceIoOpen_Hook(const char *filename, int flag, SceIoMode mode, sceIoOpenO
         fd = SCE_ERROR_ERRNO_ENOENT;
         goto out;
     }
+    // TODO: Open an fd to the actual file & location in the pkg or local data
+    // and hide that in our vfd
+
     printf("- sceIoOpen('%s') [OVL]: 0x%08X\n", path, fd);
 
 out:
@@ -720,12 +775,15 @@ int sceIoClose_Hook(SceUID fd)
     // Workaround for what appears to be a taiHEN bug when trying to hook sceIoClose()
     // See https://github.com/yifanlu/taiHEN/issues/84
     r = ksceIoClose(ksceKernelKernelUidForUserUid(ksceKernelGetProcessId(), fd));
-    vfd_t* vfd = get_vfd(fd);
-    if (vfd != NULL) {
-        r = vpfs_close(fd);
-        printf("- sceIoClose(0x%08X) [OVL]: 0x%08X\n", fd, r);
-    }
 
+    if ((fd >> 16) != VPFD_MAGIC)
+        goto out;
+
+    r = vpfs_close(fd);
+    // Todo also close our hidden fd
+    printf("- sceIoClose(0x%08X) [OVL]: 0x%08X\n", fd, r);
+
+out:
     EXIT_SYSCALL(state);
     return r;
 }
@@ -824,6 +882,7 @@ int module_start(SceSize argc, const void *args)
 
     // We need a mutex to prevent concurrency on vfd index attribution
     vfd_mutex = ksceKernelCreateMutex("VfdMutex", 0, 0, 0);
+    vpkg_mutex = ksceKernelCreateMutex("VpkgMutex", 0, 0, 0);
 
     return SCE_KERNEL_START_SUCCESS;
 }
@@ -836,5 +895,6 @@ int module_stop(SceSize argc, const void *args)
             taiHookReleaseForKernel(hooks[i].id, hooks[i].ref);
     }
     ksceKernelDeleteMutex(vfd_mutex);
+    ksceKernelDeleteMutex(vpkg_mutex);
     return SCE_KERNEL_STOP_SUCCESS;
 }
