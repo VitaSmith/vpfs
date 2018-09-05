@@ -87,10 +87,11 @@ typedef struct {
 typedef struct {
     uint32_t    type;
     uint32_t    flags;
+    uint64_t    enc_offset; // Where the encrypted data starts
     char        content_id[40];
     char        path[256];
-    uint8_t     aes_key[16];
-    uint8_t     aes_iv[16];
+    uint8_t     key[16];
+    uint8_t     iv[16];
 } vpfs_pkg_t;
 
 typedef struct {

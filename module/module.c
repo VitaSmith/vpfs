@@ -17,8 +17,8 @@
 */
 
 #define _PSP2_KERNEL_CLIB_H_
-#include "vpfs.h"
-#include "vpfs_utils.h"
+#include "../vpfs.h"
+#include "../vpfs_utils.h"
 #include "module.h"
 
 #include <psp2kern/types.h>
@@ -153,7 +153,7 @@ int usceSblSsMgrAESCTRDecrypt(usceSblSsMgrAESCTRDecrypt_args* args)
 {
     int r;
     SceUID aes_src_uid = -1, aes_dst_uid = -1, aes_key_uid = -1, aes_iv_uid = -1;
-    uint8_t *aes_src = NULL, *aes_dst = NULL, *aes_key = NULL, *aes_iv = NULL;
+    uint8_t *aes_src = NULL, *aes_dst = NULL, *key = NULL, *iv = NULL;
     usceSblSsMgrAESCTRDecrypt_args kargs;
 
     printf("usceSblSsMgrAESCTRDecrypt\n");
@@ -183,12 +183,12 @@ int usceSblSsMgrAESCTRDecrypt(usceSblSsMgrAESCTRDecrypt_args* args)
         goto out;
 
     // Allocate key buffer
-    r = kalloc("aes_key", (kargs.key_size / 8), &aes_key_uid, &aes_key);
+    r = kalloc("aes_key", (kargs.key_size / 8), &aes_key_uid, &key);
     if (r < 0)
         goto out;
 
     // Allocate iv buffer
-    r = kalloc("aes_ic", 0x10, &aes_iv_uid, &aes_iv);
+    r = kalloc("aes_ic", 0x10, &aes_iv_uid, &iv);
     if (r < 0)
         goto out;
 
@@ -198,17 +198,17 @@ int usceSblSsMgrAESCTRDecrypt(usceSblSsMgrAESCTRDecrypt_args* args)
         goto out;
 
     // Copy key to kernel
-    r = ksceKernelMemcpyUserToKernel(aes_key, (uintptr_t)kargs.key, kargs.key_size / 8);
+    r = ksceKernelMemcpyUserToKernel(key, (uintptr_t)kargs.key, kargs.key_size / 8);
     if (r < 0)
         goto out;
 
     // Copy iv to kernel
-    r = ksceKernelMemcpyUserToKernel(aes_iv, (uintptr_t)kargs.iv, 0x10);
+    r = ksceKernelMemcpyUserToKernel(iv, (uintptr_t)kargs.iv, 0x10);
     if (r < 0)
         goto out;
 
     // Call function
-    r = sceSblSsMgrAESCTRDecryptForDriver(aes_src, aes_dst, kargs.size, aes_key, kargs.key_size, aes_iv, kargs.mask_enable);
+    r = sceSblSsMgrAESCTRDecryptForDriver(aes_src, aes_dst, kargs.size, key, kargs.key_size, iv, kargs.mask_enable);
     if (r < 0)
         goto out;
 
@@ -229,17 +229,20 @@ out:
 
 typedef struct
 {
-    char        path[MAX_PATH + sizeof(vpfs_ext)];
-    SceUID      kalloc_uid;
-    uint8_t*    data;
-    SceDateTime pkg_time;
-    uint32_t    refcount;
+    // TODO: Is path actually needed?
+    char            path[MAX_PATH + sizeof(vpfs_ext)];
+    SceUID          kalloc_uid;
+    uint8_t*        data;
+    SceDateTime     pkg_time;
+    uint32_t        refcount;
 } vpkg_t;
 
 typedef struct
 {
-    vpkg_t*     vpkg;
-    uint32_t    dir_offset;
+    vpkg_t*         vpkg;
+    vpfs_item_t*    item;
+    SceUID          fd;
+    uint64_t        offset;
 } vfd_t;
 
 static vpkg_t   vpkgs[MAX_VPKG] = { 0 };
@@ -469,6 +472,7 @@ static vpfs_item_t* vpfs_find_item(uint8_t* vpfs, const char* path)
 #define SCEIOGETSTAT    3
 #define SCEIOOPEN       4
 #define SCEIOCLOSE      5
+#define SCEIOREAD       6
 
 typedef struct {
     void*           func;
@@ -520,30 +524,30 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
         fd = SCE_ERROR_ERRNO_EFAULT;
         goto out;
     }
-    vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
-    if (item == NULL) {
+    vfd->item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
+    if (vfd->item == NULL) {
         printf("- sceIoDopen('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
         fd = SCE_ERROR_ERRNO_ENOENT;
         goto out;
     }
 
     // Check our data
-    if (!(item->flags & VPFS_ITEM_TYPE_DIR)) {
+    if (!(vfd->item->flags & VPFS_ITEM_TYPE_DIR)) {
         printf("- sceIoDopen('%s') [OVL]: Item found is not a directory\n", path);
         fd = SCE_ERROR_ERRNO_ENOTDIR;
         goto out;
     }
-    if (item->flags & VPFS_ITEM_DELETED) {
+    if (vfd->item->flags & VPFS_ITEM_DELETED) {
         printf("- sceIoDopen('%s') [OVL]: Item was deleted\n", path);
         fd = SCE_ERROR_ERRNO_ENOENT;
         goto out;
     }
-    if (item->pkg_index > 0) {
+    if (vfd->item->pkg_index > 0) {
         printf("- sceIoDopen('%s') [OVL]: Directory offset is not in VPFS file\n", path);
         fd = SCE_ERROR_ERRNO_EFAULT;
         goto out;
     }
-    vfd->dir_offset = (uint32_t)item->offset;
+    vfd->offset = vfd->item->offset;
     printf("- sceIoDopen('%s') [OVL]: 0x%08X\n", path, fd);
 
 out:
@@ -586,7 +590,7 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
     }
 
     // Virtual directory
-    const char* path = (const char*)&vfd->vpkg->data[vfd->dir_offset];
+    const char* path = (const char*)&vfd->vpkg->data[vfd->offset];
     size_t len = strlen(path);
     if (len == 0) {
         // No more content in this directory
@@ -614,7 +618,7 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
         stat.st_size = item->size;
     }
     ksceKernelMemcpyKernelToUser((uintptr_t)dir, &stat, sizeof(stat));
-    vfd->dir_offset += len + 1;
+    vfd->offset += len + 1;
     r = 1;
 //    printf("- sceIoDread(0x%08X) [OVL]: '%s'\n", fd, name);
 
@@ -729,9 +733,9 @@ SceUID sceIoOpen_Hook(const char *filename, int flag, SceIoMode mode, sceIoOpenO
             memcpy(bck, &path[i], sizeof(vpfs_ext));
             memcpy(&path[i], vpfs_ext, sizeof(vpfs_ext));
             fd = vpfs_open(path);
+            memcpy(&path[i], bck, sizeof(vpfs_ext));
             if (fd >= 0)
                 break;
-            memcpy(&path[i], bck, sizeof(vpfs_ext));
         }
     }
     if (i == 0) {
@@ -742,35 +746,58 @@ SceUID sceIoOpen_Hook(const char *filename, int flag, SceIoMode mode, sceIoOpenO
     }
 
     // Filter out flags that are incompatible with the read-only nature of VPFS
-    if (flag & (SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND | SCE_O_TRUNC)) {
+    if (flag & (SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND | SCE_O_TRUNC | SCE_O_DIROPEN)) {
         printf("- sceIoOpen('%s') [OVL]: 0x%08X flags are incompatible with read-only VPFS\n", path, flag);
         fd = SCE_ERROR_ERRNO_EROFS;
         goto out;
     }
 
-    memcpy(&path[i], bck, sizeof(vpfs_ext));
     // We have an opened vfd -> process it
     vfd_t* vfd = get_vfd(fd);
     if (vfd == NULL) {
         fd = SCE_ERROR_ERRNO_EFAULT;
         goto out;
     }
-    vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
-    if (item == NULL) {
+    vfd->item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
+    if (vfd->item == NULL) {
         printf("- sceIoOpen('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
         fd = SCE_ERROR_ERRNO_ENOENT;
         goto out;
     }
 
     // Check our data
-    if (item->flags & VPFS_ITEM_DELETED) {
+    if (vfd->item->flags & VPFS_ITEM_DELETED) {
         printf("- sceIoOpen('%s') [OVL]: Item was deleted\n", path);
         fd = SCE_ERROR_ERRNO_ENOENT;
         goto out;
     }
-    // TODO: Open an fd to the actual file & location in the pkg or local data
-    // and hide that in our vfd
 
+    if (vfd->item->flags & VPFS_ITEM_TYPE_DIR) {
+        printf("- sceIoOpen('%s') [OVL]: This is a directory\n", path);
+        fd = SCE_ERROR_ERRNO_ENOENT;
+        goto out;
+    }
+
+    char* item_path = NULL;
+    if (vfd->item->pkg_index < 0) {
+        // The item resides in the .vpfs
+        memcpy(&path[i], vpfs_ext, sizeof(vpfs_ext));
+        item_path = path;
+    } else {
+        // The item resides in an external PKG file
+        vpfs_pkg_t* pkg = (vpfs_pkg_t*)&vfd->vpkg->data[sizeof(vpfs_header_t) + vfd->item->pkg_index * sizeof(vpfs_pkg_t)];
+        item_path = pkg->path;
+    }
+    vfd->fd = ksceIoOpen(item_path, SCE_O_RDONLY, 0);
+    if (vfd->fd < 0) {
+        perr("- sceIoOpen [OVL]: Could not open '%s': 0x%08X\n", item_path, vfd->fd);
+        fd = vfd->fd;
+        goto out;
+    }
+    if (vfd->item->pkg_index < 0)
+        memcpy(&path[i], bck, sizeof(vpfs_ext));
+    vfd->offset = 0;
+    ksceIoLseek(vfd->fd, vfd->item->offset, SCE_SEEK_SET);
     printf("- sceIoOpen('%s') [OVL]: 0x%08X\n", path, fd);
 
 out:
@@ -783,16 +810,113 @@ int sceIoClose_Hook(SceUID fd)
     int r, state;
     ENTER_SYSCALL(state);
 
-    // Workaround for what appears to be a taiHEN bug when trying to hook sceIoClose()
-    // See https://github.com/yifanlu/taiHEN/issues/84
-    r = ksceIoClose(ksceKernelKernelUidForUserUid(ksceKernelGetProcessId(), fd));
+    if ((fd >> 16) != VPFD_MAGIC) {
+        // Workaround for what appears to be a taiHEN bug when trying to hook sceIoClose()
+        // See https://github.com/yifanlu/taiHEN/issues/84
+        r = ksceIoClose(ksceKernelKernelUidForUserUid(ksceKernelGetProcessId(), fd));
+        goto out;
+    }
 
+    r = vpfs_close(fd);
+    vfd_t* vfd = get_vfd(fd);
+    if ((vfd != NULL) && (vfd->fd > 0))
+        ksceIoClose(vfd->fd);
+    vfd->fd = 0;
+    printf("- sceIoClose(0x%08X) [OVL]: 0x%08X\n", fd, r);
+
+out:
+    EXIT_SYSCALL(state);
+    return r;
+}
+
+int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
+{
+    int r, state;
+    uint8_t kdata[512];
+    ENTER_SYSCALL(state);
+
+    r = TAI_CONTINUE(int, hooks[SCEIOREAD].ref, fd, data, size);
     if ((fd >> 16) != VPFD_MAGIC)
         goto out;
 
-    r = vpfs_close(fd);
-    // Todo also close our hidden fd
-    printf("- sceIoClose(0x%08X) [OVL]: 0x%08X\n", fd, r);
+    vfd_t* vfd = get_vfd(fd);
+    if (vfd->item->pkg_index < 0) {
+        // Only support binary embedded files for now
+        if (vfd->item->flags != VPFS_ITEM_TYPE_BIN) {
+            printf("- sceIoRead(0x%08X) [OVL]: Item doesn't have BIN type\n", fd);
+            r = SCE_ERROR_ERRNO_EIO;
+            goto out;
+        }
+        if (size > sizeof(kdata)) {
+            perr("- sceIoRead: Buffered read is not implemented yet!!\n");
+            r = SCE_ERROR_ERRNO_EIO;
+            goto out;
+        }
+        r = ksceIoRead(vfd->fd, kdata, size);
+        if (r <= 0)
+            goto out;
+        vfd->offset += r;
+        ksceKernelMemcpyKernelToUser((uintptr_t)data, &kdata, r);
+    } else {
+        // Only support AES CTR files for now
+        if (vfd->item->flags != VPFS_ITEM_TYPE_AES) {
+            printf("- sceIoRead(0x%08X) [OVL]: Item doesn't have AES CTR type\n", fd);
+            r = SCE_ERROR_ERRNO_EIO;
+            goto out;
+        }
+        if (sceSblSsMgrAESCTRDecryptForDriver == NULL) {
+            perr("- sceIoRead(0x%08X) [OVL]: sceSblSsMgrAESCTRDecryptForDriver() is not available\n", fd);
+            r = SCE_ERROR_ERRNO_EFAULT;
+            goto out;
+        }
+
+        SceOff ctr_offset = vfd->offset % 16;
+        if (ctr_offset != 0) {
+            // Roll back to the start of our CTR segment
+            printf("- sceIoRead(0x%08X)[OVL]: CTR rollback %d bytes\n", (int)ctr_offset);
+            ksceIoLseek(fd, -ctr_offset, SCE_SEEK_CUR);
+            vfd->offset -= ctr_offset;
+        }
+
+        // Set the IV
+        vpfs_pkg_t* pkg = (vpfs_pkg_t*)&vfd->vpkg->data[sizeof(vpfs_header_t) + vfd->item->pkg_index * sizeof(vpfs_pkg_t)];
+        uint64_t block = (vfd->item->offset + vfd->offset - pkg->enc_offset) / 16;
+        uint8_t iv[16];
+        // The AES IV used by sceSblSsMgrAESCTRDecryptForDriver() must be inverted from its PKG representation.
+        // We take this opportunity to add the relevant data for XOR CTR.
+        for (int i = 0; i < 16; i++) {
+            block = block + pkg->iv[15 - i];
+            iv[i] = (uint8_t)block;
+            block >>= 8;
+        }
+
+        SceSize data_size = size + ctr_offset;
+        SceSize data_offset = 0;
+        while (data_size > 0) {
+            int read = (data_size < sizeof(kdata)) ? data_size : sizeof(kdata);
+            // All the PKG data is padded to 16 bytes so we can extend short reads
+            if (read < 16)
+                read = 16;
+            read = ksceIoRead(vfd->fd, kdata, read);
+            if (read <= ctr_offset) {
+                r = read;
+                goto out;
+            }
+            data_size -= read;
+
+            // Note: This call updates the iv for us
+            r = sceSblSsMgrAESCTRDecryptForDriver(kdata, kdata, read, pkg->key, 0x80, iv, 1);
+            if (r < 0) {
+                perr("- sceIoRead(0x%08X) [OVL]: Could not decrypt AES CTR 0x%08X\n", fd, r);
+                goto out;
+            }
+            vfd->offset += read;
+            ksceKernelMemcpyKernelToUser((uintptr_t)data + data_offset, &kdata[ctr_offset], read - ctr_offset);
+            data_offset += read - ctr_offset;
+        }
+        r = size;
+    }
+    printf("- sceIoRead(0x%08X) [OVL]: 0x%08X\n", fd, r);
 
 out:
     EXIT_SYSCALL(state);
@@ -867,6 +991,7 @@ hook_t hooks[] = {
     { sceIoGetstat_Hook, 0x8E7E11F2, -1, 0 },
     { sceIoOpen_Hook, 0xCC67B6FD, -1, 0 },
     { sceIoClose_Hook, 0xC70B8886, -1, 0 },
+    { sceIoRead_Hook, 0xFDB32293, -1, 0 },
 };
 
 
@@ -876,11 +1001,10 @@ int module_start(SceSize argc, const void *args)
 {
     int r = -1;
     printf("Loading VPFS kernel driver...\n");
-    // TODO: re-enable this when we start exporting 
-    //r = module_get_export_func(KERNEL_PID, "SceSblSsMgr", SceSblSsMgrForDriver_NID,
-    //    SceSblSsMgrAESCTRDecryptForDriver_NID, (uintptr_t*)&sceSblSsMgrAESCTRDecryptForDriver);
-    //if (r < 0)
-    //    perr("Could not set sceSblSsMgrAESCTRDecryptForDriver: 0x%08X\n", r);
+    r = module_get_export_func(KERNEL_PID, "SceSblSsMgr", SceSblSsMgrForDriver_NID,
+        SceSblSsMgrAESCTRDecryptForDriver_NID, (uintptr_t*)&sceSblSsMgrAESCTRDecryptForDriver);
+    if (r < 0)
+        perr("Could not set sceSblSsMgrAESCTRDecryptForDriver: 0x%08X\n", r);
 
     r = module_get_export_func(KERNEL_PID, "SceSblSsMgr", SceSblSsMgrForDriver_NID,
         SceSblSsMgrSHA1ForDriver_NID, (uintptr_t*)&sceSblSsMgrSHA1ForDriver);

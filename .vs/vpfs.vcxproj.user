@@ -1,11 +1,11 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <LocalDebuggerCommandArguments>C:/vpfs/UP0700-PCSE00001_00-RIDGERACERPSVITA.pkg</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>C:/vpfs/UP0700-PCSE00001_00-RIDGERACERPSVITA.pkg KO5ifR1dQ+eHBoBcAjPVwBBkf5Cni7trkKOza1BAcJhniCM+/80ruNGQsvfd0tWHavXeanw1H43xwQ0AdrwWiQAA</LocalDebuggerCommandArguments>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-    <LocalDebuggerCommandArguments>C:/vpfs/UP0700-PCSE00001_00-RIDGERACERPSVITA.pkg</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>C:/vpfs/UP0700-PCSE00001_00-RIDGERACERPSVITA.pkg KO5ifR1dQ+eHBoBcAjPVwBBkf5Cni7trkKOza1BAcJhniCM+/80ruNGQsvfd0tWHavXeanw1H43xwQ0AdrwWiQAA</LocalDebuggerCommandArguments>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
   </PropertyGroup>
 </Project>

@@ -783,11 +783,12 @@ int main(int argc, char* argv[])
     vpfs_t vpfs;
     vpfs_init(&vpfs, 1, item_count + NUM_EXTRA_ITEMS);
     vpfs.pkg[pkg_index].type = type; // Not sure if really needed
+    vpfs.pkg[pkg_index].enc_offset = enc_offset;
     strncpy(vpfs.pkg[pkg_index].content_id, content, sizeof(vpfs.pkg[pkg_index].content_id) - 1);
     sys_printf("[*] content_id %s\n", vpfs.pkg[pkg_index].content_id);
     snprintf(vpfs.pkg[pkg_index].path, sizeof(vpfs.pkg[pkg_index].path), "ux0:pkg/%s", basename(pkg_arg));
-    memcpy(vpfs.pkg[pkg_index].aes_key, main_key, sizeof(main_key));
-    memcpy(vpfs.pkg[pkg_index].aes_iv, iv, 16);
+    memcpy(vpfs.pkg[pkg_index].key, main_key, sizeof(main_key));
+    memcpy(vpfs.pkg[pkg_index].iv, iv, 16);
 
     bool sce_sys_package_created = false;
 
@@ -853,7 +854,7 @@ int main(int argc, char* argv[])
                 vpfs_item.flags = VPFS_ITEM_TYPE_AES;
             }
 
-            vpfs_item.offset = data_offset;
+            vpfs_item.offset = enc_offset + data_offset;
             vpfs_item.size = data_size;
             vpfs_item.pkg_index = pkg_index;
             assert(vpfs_add(&vpfs, &vpfs_item, name));
