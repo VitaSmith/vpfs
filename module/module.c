@@ -63,7 +63,13 @@
 #define SceIofilemgrForDriver_NID               0x40FD29C7
 #define SceIofilemgr_NID                        0xF2FF276E
 
-static char vpfs_ext[] = ".vpfs";
+#define SCEIODOPEN      0
+#define SCEIODREAD      1
+#define SCEIODCLOSE     2
+#define SCEIOGETSTAT    3
+#define SCEIOOPEN       4
+#define SCEIOCLOSE      5
+#define SCEIOREAD       6
 
 typedef struct
 {
@@ -79,20 +85,55 @@ sceSblSsMgrSHA1ForDriver_t*                     sceSblSsMgrSHA1ForDriver = NULL;
 static uint8_t empty_sha1sum[20] = {
     0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55, 0xbf, 0xef, 0x95, 0x60, 0x18, 0x90, 0xaf, 0xd8, 0x07, 0x09
 };
+static char    vpfs_ext[] = ".vpfs";
+
+typedef struct
+{
+    // TODO: Is path actually needed?
+    char            path[MAX_PATH + sizeof(vpfs_ext)];
+    SceUID          kalloc_uid;
+    uint8_t*        data;
+    SceDateTime     pkg_time;
+    uint32_t        refcount;
+} vpkg_t;
+
+typedef struct
+{
+    vpkg_t*         vpkg;
+    vpfs_item_t*    item;
+    SceUID          fd;
+    uint64_t        offset;
+} vfd_t;
+
+typedef struct {
+    void*           func;
+    uint32_t        nid;
+    SceUID          id;
+    tai_hook_ref_t  ref;
+} hook_t;
+
+hook_t   hooks[];
+
+static vpkg_t   vpkgs[MAX_VPKG] = { 0 };
+static vfd_t    vfds[MAX_FD] = { 0 };
+static uint16_t vfd_index = 0;
+static SceUID   vfd_mutex = -1, vpkg_mutex = -1, log_mutex = -1;
 
 // Missing taihen exports
 extern int module_get_export_func(SceUID pid, const char *modname, uint32_t libnid, uint32_t funcnid, uintptr_t *func);
 
 // Log functions
 static char log_msg[256];
+static SceUID log_fd = 0;
 static void log_print(const char* msg)
 {
-    SceUID fd = ksceIoOpen(LOG_PATH, SCE_O_CREAT | SCE_O_APPEND | SCE_O_WRONLY, 0777);
-
-    if (fd >= 0) {
-        ksceIoWrite(fd, msg, strlen(msg));
-        ksceIoClose(fd);
+    ksceKernelLockMutex(log_mutex, 1, 0);
+    log_fd = ksceIoOpen(LOG_PATH, SCE_O_CREAT | SCE_O_APPEND | SCE_O_WRONLY, 0777);
+    if (log_fd >= 0) {
+        ksceIoWrite(log_fd, msg, strlen(msg));
+        ksceIoClose(log_fd);
     }
+    ksceKernelUnlockMutex(log_mutex, 1);
 }
 #define printf(...) do { snprintf(log_msg, sizeof(log_msg), __VA_ARGS__); log_print(log_msg); } while(0)
 #define perr        printf
@@ -225,35 +266,14 @@ out:
     return r;
 }
 
+//
 // Helper functions
-
-typedef struct
-{
-    // TODO: Is path actually needed?
-    char            path[MAX_PATH + sizeof(vpfs_ext)];
-    SceUID          kalloc_uid;
-    uint8_t*        data;
-    SceDateTime     pkg_time;
-    uint32_t        refcount;
-} vpkg_t;
-
-typedef struct
-{
-    vpkg_t*         vpkg;
-    vpfs_item_t*    item;
-    SceUID          fd;
-    uint64_t        offset;
-} vfd_t;
-
-static vpkg_t   vpkgs[MAX_VPKG] = { 0 };
-static vfd_t    vfds[MAX_FD] = { 0 };
-static uint16_t vfd_index = 0;
-static SceUID   vfd_mutex = -1, vpkg_mutex = -1;
-
+//
 static int vpkg_open(const char *path)
 {
+    int i;
     // Try to find an existing opened cached VPFS and return its index if found
-    for (int i = 0; i < MAX_VPKG; i++) {
+    for (i = 0; i < MAX_VPKG; i++) {
         if (strcmp(path, vpkgs[i].path) == 0) {
             ksceKernelLockMutex(vpkg_mutex, 1, 0);
             vpkgs[i].refcount++;
@@ -261,30 +281,35 @@ static int vpkg_open(const char *path)
             return i;
         }
     }
+
     // Not alreay open -> Try to create a new one
     ksceKernelLockMutex(vpkg_mutex, 1, 0);
-    for (int i = 0; i < MAX_VPKG; i++) {
+    for (i = 0; i < MAX_VPKG; i++) {
         if (vpkgs[i].path[0] == 0) {
             uint8_t* data;
             vpfs_header_t header;
             SceIoStat stat;
 
             // First, check if the VPFS path exists and is a regular file
-            if ((ksceIoGetstat(path, &stat) < 0) || (!SCE_S_ISREG(stat.st_mode)))
-                return SCE_ERROR_ERRNO_ENOENT;
+            if ((ksceIoGetstat(path, &stat) < 0) || (!SCE_S_ISREG(stat.st_mode))) {
+                i = SCE_ERROR_ERRNO_ENOENT;
+                goto out;
+            }
 
             SceUID fd = ksceIoOpen(path, SCE_O_RDONLY, 0);
             if (fd < 0) {
                 perr("Could not open '%s': 0x%08X\n", path, fd);
                 kfree(vpkgs[i].kalloc_uid);
-                return fd;
+                i = fd;
+                goto out;
             }
             // Sanity check
             if (stat.st_size < sizeof(vpfs_header_t) + sizeof(vpfs_pkg_t) + sizeof(uint32_t) + sizeof(vpfs_item_t)) {
                 perr("VPFS file is too small\n");
                 ksceIoClose(fd);
                 kfree(vpkgs[i].kalloc_uid);
-                return SCE_ERROR_ERRNO_EACCES;
+                i = SCE_ERROR_ERRNO_EACCES;
+                goto out;
             }
 
             // Read the header to find the size of the data we need to cache
@@ -292,20 +317,23 @@ static int vpkg_open(const char *path)
             if (read != sizeof(header)) {
                 perr("Could not read VPFS header: 0x%08X\n", read);
                 ksceIoClose(fd);
-                return SCE_ERROR_ERRNO_EIO;
+                i = SCE_ERROR_ERRNO_EIO;
+                goto out;
             }
 
             if (header.magic != VPFS_MAGIC) {
                 perr("Invalid VPFS magic\n");
                 ksceIoClose(fd);
-                return SCE_ERROR_ERRNO_EACCES;
+                i = SCE_ERROR_ERRNO_EACCES;
+                goto out;
             }
 
             // Allocate memory to cache the VPFS data.
             // Note that we don't cache any data past the directory listing.
             if (kalloc(path, (SceOff)header.size, &vpkgs[i].kalloc_uid, &data) < 0) {
                 ksceIoClose(fd);
-                return SCE_ERROR_ERRNO_ENOMEM;
+                i = SCE_ERROR_ERRNO_ENOMEM;
+                goto out;
             }
             memcpy(data, &header, sizeof(header));
 
@@ -315,20 +343,24 @@ static int vpkg_open(const char *path)
             if (read != (header.size - sizeof(header))) {
                 perr("Could not read VPFS data: 0x%08X\n", read);
                 kfree(vpkgs[i].kalloc_uid);
-                return SCE_ERROR_ERRNO_EIO;
+                ksceKernelUnlockMutex(vpkg_mutex, 1);
+                i = SCE_ERROR_ERRNO_EIO;
+                goto out;
             }
 
             vpkgs[i].refcount = 1;
             vpkgs[i].data = data;
             vpkgs[i].pkg_time = stat.st_ctime;
             strncpy(vpkgs[i].path, path, sizeof(vpkgs[i].path));
-            ksceKernelUnlockMutex(vpkg_mutex, 1);
-            return i;
+            goto out;
         }
     }
     // All vpkgs slots are taken
+    i = SCE_ERROR_ERRNO_ENFILE;
+
+out:
     ksceKernelUnlockMutex(vpkg_mutex, 1);
-    return SCE_ERROR_ERRNO_ENFILE;
+    return i;
 }
 
 static void vpkg_close(vpkg_t* vpkg)
@@ -465,26 +497,14 @@ static vpfs_item_t* vpfs_find_item(uint8_t* vpfs, const char* path)
     return NULL;
 }
 
+//
 // Hooks
-#define SCEIODOPEN      0
-#define SCEIODREAD      1
-#define SCEIODCLOSE     2
-#define SCEIOGETSTAT    3
-#define SCEIOOPEN       4
-#define SCEIOCLOSE      5
-#define SCEIOREAD       6
-
-typedef struct {
-    void*           func;
-    uint32_t        nid;
-    SceUID          id;
-    tai_hook_ref_t  ref;
-} hook_t;
-
-hook_t hooks[];
-
+//
 SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
 {
+    // Address the possible race condition from https://github.com/yifanlu/taiHEN/issues/12
+    if (hooks[SCEIODOPEN].ref == 0)
+        return SCE_ERROR_ERRNO_EFAULT;
     int r, state;
     char path[MAX_PATH + sizeof(vpfs_ext)];
     char bck[sizeof(vpfs_ext)];
@@ -557,6 +577,9 @@ out:
 
 int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
 {
+    // Address the possible race condition from https://github.com/yifanlu/taiHEN/issues/12
+    if (hooks[SCEIODREAD].ref == 0)
+        return SCE_ERROR_ERRNO_EFAULT;
     int r, state;
     ENTER_SYSCALL(state);
 
@@ -629,6 +652,8 @@ out:
 
 int sceIoDclose_Hook(SceUID fd)
 {
+    if (hooks[SCEIODCLOSE].ref == 0)
+        return SCE_ERROR_ERRNO_EFAULT;
     int r, state;
     ENTER_SYSCALL(state);
 
@@ -646,6 +671,8 @@ int sceIoDclose_Hook(SceUID fd)
 
 int sceIoGetstat_Hook(const char* file, SceIoStat* stat, sceIoGetstatOpt *opt)
 {
+    if (hooks[SCEIOGETSTAT].ref == 0)
+        return SCE_ERROR_ERRNO_EFAULT;
     int r, state;
     ENTER_SYSCALL(state);
 
@@ -717,6 +744,8 @@ out:
 
 SceUID sceIoOpen_Hook(const char *filename, int flag, SceIoMode mode, sceIoOpenOpt *opt)
 {
+    if (hooks[SCEIOOPEN].ref == 0)
+        return SCE_ERROR_ERRNO_EFAULT;
     size_t i;
     int r, state;
     char path[MAX_PATH + sizeof(vpfs_ext)];
@@ -807,6 +836,8 @@ out:
 
 int sceIoClose_Hook(SceUID fd)
 {
+    if (hooks[SCEIOCLOSE].ref == 0)
+        return SCE_ERROR_ERRNO_EFAULT;
     int r, state;
     ENTER_SYSCALL(state);
 
@@ -831,6 +862,8 @@ out:
 
 int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
 {
+    if (hooks[SCEIOREAD].ref == 0)
+        return SCE_ERROR_ERRNO_EFAULT;
     int r, state;
     uint8_t kdata[512];
     ENTER_SYSCALL(state);
@@ -892,6 +925,7 @@ int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
 
         SceSize data_size = size + ctr_offset;
         SceSize data_offset = 0;
+        // TODO: Double buffering with async read into one buffer and CTR decrypt in the other
         while (data_size > 0) {
             int read = (data_size < sizeof(kdata)) ? data_size : sizeof(kdata);
             // All the PKG data is padded to 16 bytes so we can extend short reads
@@ -1000,6 +1034,12 @@ void _start() __attribute__((weak, alias("module_start")));
 int module_start(SceSize argc, const void *args)
 {
     int r = -1;
+
+    // We need a handful of mutexes to guard against concurrent calls
+    vfd_mutex = ksceKernelCreateMutex("log_mutex", 0, 0, 0);
+    vfd_mutex = ksceKernelCreateMutex("vfd_mutex", 0, 0, 0);
+    vpkg_mutex = ksceKernelCreateMutex("vpkg_mutex", 0, 0, 0);
+
     printf("Loading VPFS kernel driver...\n");
     r = module_get_export_func(KERNEL_PID, "SceSblSsMgr", SceSblSsMgrForDriver_NID,
         SceSblSsMgrAESCTRDecryptForDriver_NID, (uintptr_t*)&sceSblSsMgrAESCTRDecryptForDriver);
@@ -1015,10 +1055,6 @@ int module_start(SceSize argc, const void *args)
     for (int i = 0; i < ARRAYSIZE(hooks); i++)
         hooks[i].id = taiHookFunctionExportForKernel(KERNEL_PID, &hooks[i].ref, "SceIofilemgr", TAI_ANY_LIBRARY, hooks[i].nid, hooks[i].func);
 
-    // We need a mutex to prevent concurrency on vfd index attribution
-    vfd_mutex = ksceKernelCreateMutex("VfdMutex", 0, 0, 0);
-    vpkg_mutex = ksceKernelCreateMutex("VpkgMutex", 0, 0, 0);
-
     return SCE_KERNEL_START_SUCCESS;
 }
 
@@ -1029,7 +1065,8 @@ int module_stop(SceSize argc, const void *args)
         if (hooks[i].id >= 0)
             taiHookReleaseForKernel(hooks[i].id, hooks[i].ref);
     }
-    ksceKernelDeleteMutex(vfd_mutex);
     ksceKernelDeleteMutex(vpkg_mutex);
+    ksceKernelDeleteMutex(vfd_mutex);
+    ksceKernelDeleteMutex(log_mutex);
     return SCE_KERNEL_STOP_SUCCESS;
 }

@@ -407,6 +407,18 @@ static bool test_read_file(char* path, uint8_t* expected_data, int size)
     return true;
 }
 
+static void wait_for_key(const char* message)
+{
+    SceCtrlData pad;
+
+    console_set_color(CYAN);
+    printf("\n%s\n", message);
+    console_set_color(WHITE);
+    do {
+        sceCtrlPeekBufferPositive(0, &pad, 1);
+    } while (!(pad.buttons & SCE_CTRL_CROSS));
+    console_reset();
+}
 
 #define DISPLAY_TEST(msg, func, ...) \
     r = func(__VA_ARGS__); \
@@ -419,8 +431,7 @@ static bool test_read_file(char* path, uint8_t* expected_data, int size)
 int main()
 {
     int r = -1;
-    SceCtrlData pad;
-    const bool group[2] = { false, true };
+    const bool group[2] = { true, true };
 
     init_video();
     console_init();
@@ -449,6 +460,7 @@ int main()
         DISPLAY_TEST("Virtual directory is present in 'ux0:app' (GetStat)", test_stat, "ux0:app/PCSE00001/", 0);
         DISPLAY_TEST("Size of 'eboot.bin' (GetStat)", test_stat, "ux0:app/PCSE00001/eboot.bin", 1160512);
     }
+    wait_for_key("Press X to continue...");
     if (group[1]) {
         DISPLAY_TEST("Open 'eboot.bin'", test_open_file, "ux0:app/PCSE00001/eboot.bin");
         DISPLAY_TEST("Open 'sce_sys/package/work.bin'", test_open_file, "ux0:app/PCSE00001/sce_sys/package/work.bin");
@@ -458,11 +470,7 @@ int main()
     DISPLAY_TEST("VPFS module can be unloaded", module_unload);
 
 out:
-    console_set_color(CYAN);
-    printf("\nPress X to exit.");
-    do {
-        sceCtrlPeekBufferPositive(0, &pad, 1);
-    } while (!(pad.buttons & SCE_CTRL_CROSS));
+    wait_for_key("Press X to exit");
     console_exit();
     end_video();
     sceKernelExitProcess(0);

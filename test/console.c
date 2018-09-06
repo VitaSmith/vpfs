@@ -34,6 +34,7 @@ void console_exit()
 
 void console_reset()
 {
+	draw_rectangle(0, 0, SCREEN_W, SCREEN_H, BLACK);
 	cns_x = 10;
 	cns_y = top_margin;
 }
