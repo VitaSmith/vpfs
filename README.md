@@ -6,7 +6,7 @@ VPFS (Vita PKG File System) is a virtual file system for the Sony PlayStation Vi
 PKG archives (such as the kind you get from PSN) without having to go through a costly decryption and
 installation process.
 
-In other words, VPFS is designed to grand PS Vita users complete access to PKG files as if they had been
+In other words, VPFS is designed to grant PS Vita users complete access to PKG files as if they had been
 installed on one's system.
 
 This is achieved by:
@@ -26,11 +26,6 @@ __Pre ALPHA__
 Most of the system calls are still missing, and about the most you can accomplish right now is browse the
 virtual PKG directory structure from VitaShell.
 
-Also, until there is a good fix or workaround for [taiHEN issue #84](https://github.com/yifanlu/taiHEN/issues/84),
-it is not possible to run the kernel module on startup, or run it for an extended period of time, without
-observing a system freeze, which makes the whole point of VPFS moot (since it's impossible to provide a
-virtual file system unless we have the ability to consistently close user file descriptors in an override).
-
 ## Compilation and testing
 
 1. Download the Ridge Racer game installer pkg from [here](http://zeus.dl.playstation.net/cdn/UP0700/PCSE00001_00/IRPERCkHKvxNuhhuMvATYhUJimapzQvevrRLryolHuueAPfxDZnnOzWcNtjIvICnauoHCkVmffZQDjIYeOgcDWzKjNveGcxtClJLm.pkg) (777 MB).
@@ -49,7 +44,6 @@ to `ux0:app/PCSE00001/` and let your browse the content of the PKG, even as it h
 
 ## TODO
 
-- Find a workaround or fix for the `sceIoClose()` taiHEN override issue. __This is a showstopper!__
 - Complete the user-land overrides (`sceIoLseek()` and so on).
 - Kernel-land overrides.
 - Validate that VPFS content can be promoted if `work.bin` is present.
@@ -62,7 +56,7 @@ to `ux0:app/PCSE00001/` and let your browse the content of the PKG, even as it h
 ## Credits
 
 - mmozeiko for [pkg2zip](https://github.com/mmozeiko/pkg2zip) on which the `vpfs` PC application is based.
-- yifanlu for taiHEN
+- yifanlu for taiHEN.
 - TheFlow, CelesteBlue and dots-tb for their awesome work on varions applications that have been
   invaluable for the creation of the kernel plugin.
 - Everyone who contributed to the Vita SDK.

@@ -51,6 +51,7 @@
 #define VPFD_MAGIC                              0x5FF5
 #define ASM_RETURN_0                            0x47702000      // movs r0, #0; bx lr
 #define ASM_JUMP_TO_ADDRESS_BELOW               0xF000F8DF      // ldr.w pc, [pc, #0]
+#define ASM_BLX_LONG_FORM                       0xE800F000
 
 #define SCE_ERROR_ERRNO_ENOENT                  0x80010002
 #define SCE_ERROR_ERRNO_EIO                     0x80010005
@@ -775,7 +776,7 @@ SceUID sceIoOpen_Hook(const char *filename, int flag, SceIoMode mode, sceIoOpenO
     }
     if (i == 0) {
         // Couldn't find a relevant VPFS => use the original function call
-        printf("- sceIoOpen('%s') [ORG]: 0x%08X\n", path, tai_fd);
+//        printf("- sceIoOpen('%s') [ORG]: 0x%08X\n", path, tai_fd);
         fd = tai_fd;
         goto out;
     }
@@ -840,7 +841,7 @@ out:
     return fd;
 }
 
-// Workaround for a taiHEN bug when trying to hook sceIoClose()
+// Workaround for a taiHEN bug when hooking sceIoClose()
 // See https://github.com/yifanlu/taiHEN/issues/84
 // Note that gcc's inline assembly is very restrictive, which is
 // why we can't be as elegant with this code as we'd like...
@@ -1050,32 +1051,31 @@ hook_t hooks[] = {
     { sceIoRead_Hook, 0xFDB32293, -1, 0 },
 };
 
-//static void dump_hex(void *buf, size_t size)
-//{
-//#define lprintf(...) snprintf(&line[strlen(line)], sizeof(line) - strlen(line) - 1, __VA_ARGS__)
-//    unsigned char* buffer = (unsigned char*)buf;
-//    size_t i, j, k;
-//    char line[80] = "";
-//
-//    for (i = 0; i < size; i += 16) {
-//        if (i != 0)
-//            printf("%s\n", line);
-//        line[0] = 0;
-//        lprintf("%08x  ", ((uintptr_t)buf) + i);
-//        for (j = 0, k = 0; k < 16; j++, k++) {
-//            if (i + j < size) {
-//                lprintf("%02x", buffer[i + j]);
-//            } else {
-//                lprintf("  ");
-//            }
-//            lprintf(" ");
-//        }
-//    }
-//    printf("%s\n", line);
-//}
+static void dump_hex(void *buf, size_t size)
+{
+#define lprintf(...) snprintf(&line[strlen(line)], sizeof(line) - strlen(line) - 1, __VA_ARGS__)
+    unsigned char* buffer = (unsigned char*)buf;
+    size_t i, j, k;
+    char line[80] = "";
+
+    for (i = 0; i < size; i += 16) {
+        if (i != 0)
+            printf("%s\n", line);
+        line[0] = 0;
+        lprintf("%08x  ", ((uintptr_t)buf) + i);
+        for (j = 0, k = 0; k < 16; j++, k++) {
+            if (i + j < size) {
+                lprintf("%02x", buffer[i + j]);
+            } else {
+                lprintf("  ");
+            }
+            lprintf(" ");
+        }
+    }
+    printf("%s\n", line);
+}
 
 // Shamelessly stolen from taiHEN
-
 static void unrestricted_write32(void* dst, uint32_t data)
 {
     ksceKernelCpuUnrestrictedMemcpy(dst, &data, sizeof(data));
@@ -1084,48 +1084,6 @@ static void unrestricted_write32(void* dst, uint32_t data)
     ksceKernelCpuDcacheWritebackInvalidateRange((void *)vma_align, len);
     ksceKernelCpuIcacheAndL2WritebackInvalidateRange((void *)vma_align, len);
 }
-
-//static int sce_exec_alloc(uintptr_t *write_addr, uintptr_t *exec_addr, SceUID *write_uid, SceUID *exec_uid, size_t size)
-//{
-//    SceKernelAllocMemBlockKernelOpt opt;
-//    SceUID blkid;
-//    int r;
-//
-//    printf("Allocating exec memory, size 0x%08X\n", size);
-//    // Allocate executable memory
-//    memset(&opt, 0, sizeof(opt));
-//    opt.size = sizeof(opt);
-//    opt.attr = 0xA0400000 | SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_ALIGNMENT;
-//    r = ksceKernelAllocMemBlock("vpfs_exec", SCE_KERNEL_MEMBLOCK_TYPE_KERNEL_RX, size, &opt);
-//    printf("ksceKernelAllocMemBlock(vpfs_exec): 0x%08X\n", r);
-//    if (r < 0)
-//        return r;
-//    *exec_uid = r;
-//    r = ksceKernelGetMemBlockBase(*exec_uid, (void **)exec_addr);
-//    printf("ksceKernelGetMemBlockBase(%x): 0x%08X, addr: 0x%08X\n", *exec_uid, r, *exec_addr);
-//    if (r < 0)
-//        goto err;
-//
-//    // Allocate mirror
-//    memset(&opt, 0, sizeof(opt));
-//    opt.size = sizeof(opt);
-//    opt.attr = 0x1000000 | SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_MIRROR_BLOCKID;
-//    opt.mirror_blockid = *exec_uid;
-//    r = ksceKernelAllocMemBlock("vpfs_mirror", SCE_KERNEL_MEMBLOCK_TYPE_RW_UNK0, 0, &opt);
-//    printf("ksceKernelAllocMemBlock(vpfs_mirror): 0x%08X\n", r);
-//    if (r < 0)
-//        goto err;
-//    *write_uid = r;
-//    r = ksceKernelGetMemBlockBase(*write_uid, (void **)write_addr);
-//    printf("ksceKernelGetMemBlockBase(%x): 0x%08X, addr: 0x%08X\n", *write_uid, r, *write_addr);
-//    if (r >= 0)
-//        return 0;
-//
-//    ksceKernelFreeMemBlock(*write_uid);
-//err:
-//    ksceKernelFreeMemBlock(*exec_uid);
-//    return r;
-//}
 
 // Module start/stop
 void _start() __attribute__((weak, alias("module_start")));
@@ -1154,26 +1112,22 @@ int module_start(SceSize argc, const void *args)
     r = module_get_export_func(KERNEL_PID, "SceIofilemgr", SceIofilemgr_NID,
         SceIoClose_NID, (uintptr_t*)&sceIoClose_Addr);
 
-    //printf("sceIoClose (BEFORE):\n");
-    //dump_hex(NO_THUMB_UINT32_PTR(sceIoClose_Addr), 0x20);
-    //printf("sceIoClose_Override (BEFORE):\n");
-    //dump_hex(NO_THUMB_UINT32_PTR(sceIoClose_Override), 0x30);
-
-    // First 4 bytes should match duplicated code from our override
-    // Next 4 bytes should be 'blx #0x14eb4' (0xef56f014)
-    // TODO: Decode the 'blx' and use that address instead of hardcoded value
+    // First 4 bytes should match duplicate code from our override
+    // Next 4 bytes should be a long form 'blx'
     if ((NO_THUMB_UINT32_PTR(sceIoClose_Addr)[0] != NO_THUMB_UINT32_PTR(sceIoClose_Override)[3]) ||
-        (NO_THUMB_UINT32_PTR(sceIoClose_Addr)[1] != 0xef56f014)) {
-        perr("ERROR: sceIoClose() override not installed as code does not match what we expect!\n");
+        ((NO_THUMB_UINT32_PTR(sceIoClose_Addr)[1] & 0xf800f800) != ASM_BLX_LONG_FORM)) {
+        perr("Can't hook sceIoClose(): The code differs from what we can handle!\n");
+        dump_hex(sceIoClose_Addr, 0x20);
         return SCE_KERNEL_START_FAILED;
     } else {
+        // 0. Reconstruct the blx offset
+        uintptr_t offset = (NO_THUMB_UINT32_PTR(sceIoClose_Addr)[1] & 0x7ff) << 12;
+        offset |= ((NO_THUMB_UINT32_PTR(sceIoClose_Addr)[1] >> 16) & 0x7ff) << 1;
+        offset += 4;
         // 1. set the pointers in our override sceIoClose code
-        //printf("setting override lr to %p\n", (uintptr_t)sceIoClose_Addr + 8);
         unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Override)[6], (uintptr_t)sceIoClose_Addr + 8);
         // blx jumps into an ARM call so make sure we clear the THUMB bit before adding the offset
-        //printf("setting override pc to %p\n", (uintptr_t)NO_THUMB_UINT32_PTR(sceIoClose_Addr) + 0x14eb4);
-        unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Override)[7], (uintptr_t)NO_THUMB_UINT32_PTR(sceIoClose_Addr) + 0x14eb4);
-        //printf("setting hook jump to %p\n", (uintptr_t)sceIoClose_Hook);
+        unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Override)[7], (uintptr_t)NO_THUMB_UINT32_PTR(sceIoClose_Addr) + offset);
         unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Override)[9], (uintptr_t)sceIoClose_Hook);
 
         // 2. Keep a backup of the bytes we are going to overwrite from the original sceIoClose()
@@ -1185,11 +1139,6 @@ int module_start(SceSize argc, const void *args)
         unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Addr)[0], ASM_RETURN_0);
         unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Addr)[1], (uintptr_t)sceIoClose_Override);
         unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Addr)[0], ASM_JUMP_TO_ADDRESS_BELOW);
-
-        //printf("sceIoClose (AFTER):\n");
-        //dump_hex(NO_THUMB_UINT32_PTR(sceIoClose_Addr), 0x20);
-        //printf("sceIoClose_Override (AFTER):\n");
-        //dump_hex(NO_THUMB_UINT32_PTR(sceIoClose_Override), 0x30);
     }
 
     // Set the other file system hooks
