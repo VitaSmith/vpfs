@@ -1,12 +1,13 @@
 TARGET   = vpfs
 OBJS     = module.o
 
-LIBS = -ltaihen_stub -ltaihenForKernel_stub \
-  -lSceSysmemForDriver_stub -lSceSysclibForDriver_stub \
-  -lSceSblSsMgrForDriver_stub -lSceIofilemgrForDriver_stub \
-  -lSceThreadmgrForDriver_stub -lSceModulemgrForKernel_stub \
-  -lSceKernelSuspendForDriver_stub -lSceNpDrmForDriver_stub \
-  -lSceCpuForDriver_stub -ltaihenModuleUtils_stub
+LIBS = -ltaihen_stub -ltaihenForKernel_stub -ltaihenModuleUtils_stub \
+  -lSceCpuForKernel_stub -lSceCpuForDriver_stub \
+  -lSceSysmemForKernel_stub  -lSceSysmemForDriver_stub \
+  -lSceSysclibForDriver_stub -lSceSblSsMgrForDriver_stub \
+  -lSceIofilemgrForDriver_stub -lSceThreadmgrForDriver_stub \
+  -lSceModulemgrForKernel_stub -lSceKernelSuspendForDriver_stub \
+  -lSceNpDrmForDriver_stub
 
 PREFIX  = arm-vita-eabi
 CC      = $(PREFIX)-gcc

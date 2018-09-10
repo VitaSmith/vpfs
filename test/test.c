@@ -459,8 +459,8 @@ int main()
         DISPLAY_TEST("Regular file is listed in 'ux0:app' (GetStat)", test_stat, "ux0:app/VPFS00000/sce_sys/package/work.bin", 512);
         DISPLAY_TEST("Virtual directory is present in 'ux0:app' (GetStat)", test_stat, "ux0:app/PCSE00001/", 0);
         DISPLAY_TEST("Size of 'eboot.bin' (GetStat)", test_stat, "ux0:app/PCSE00001/eboot.bin", 1160512);
+        wait_for_key("Press X to continue...");
     }
-    wait_for_key("Press X to continue...");
     if (group[1]) {
         DISPLAY_TEST("Open 'eboot.bin'", test_open_file, "ux0:app/PCSE00001/eboot.bin");
         DISPLAY_TEST("Open 'sce_sys/package/work.bin'", test_open_file, "ux0:app/PCSE00001/sce_sys/package/work.bin");
