@@ -115,8 +115,9 @@ typedef struct {
 // Bits 0-2 of item describe the type of entry at offset
 #define VPFS_ITEM_TYPE_BIN      0x00000000  // As is (no encryption, no compression)
 #define VPFS_ITEM_TYPE_AES      0x00000001  // AES 128 CTR, such as the one from Sony PKG archives
-#define VPFS_ITEM_TYPE_ZIP      0x00000002  // PKZip entry
-#define VPFS_ITEM_TYPE_TAR      0x00000003  // TAR entry
+#define VPFS_ITEM_TYPE_ZERO     0x00000002  // Zeroed data
+#define VPFS_ITEM_TYPE_ZIP      0x00000003  // PKZip entry
+#define VPFS_ITEM_TYPE_TAR      0x00000004  // TAR entry
 
 #define VPFS_ITEM_TYPE_DIR      0x10000000  // Directory flag
 #define VPFS_ITEM_DELETED       0x80000000  // Deleted flag

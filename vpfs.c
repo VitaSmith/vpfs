@@ -888,11 +888,10 @@ int main(int argc, char* argv[])
 
     sys_printf("[*] adding sce_sys/package/stat.bin\n");
     name = strdup("sce_sys/package/stat.bin");
-    uint8_t stat_bin[768] = { 0 };
-    vpfs_item.flags = VPFS_ITEM_TYPE_BIN;
-    vpfs_item.pkg_index = -1;   // Local item
-    vpfs_item.size = sizeof(stat_bin);
-    vpfs_set_data(&vpfs, stat_bin, sizeof(stat_bin));
+    vpfs_item.flags = VPFS_ITEM_TYPE_ZERO;
+    vpfs_item.pkg_index = -1;
+    vpfs_item.offset = 0;
+    vpfs_item.size = 768;
     assert(vpfs_add(&vpfs, &vpfs_item, name));
 
     if ((type == PKG_TYPE_VITA_APP || type == PKG_TYPE_VITA_DLC) && (zrif_arg != NULL))
@@ -943,18 +942,14 @@ int main(int argc, char* argv[])
         item->size = dir_dump.dir[i].size;
     }
 
-    // Set the offset of stat.bin and optionally work.bin, also in local_data
-    vpfs_item_t* item = vpfs_find_item(&vpfs, "sce_sys/package/stat.bin");
-    assert(item != NULL);
-    item->offset = local_data_offset + dir_dump.buf_len;
     // Keep a copy of the VPFS size, up to the extra data, to help
     // with the caching we do in the Vita kernel module.
-    vpfs.header.size = (uint32_t)item->offset;
+    vpfs.header.size = (uint32_t)(local_data_offset + dir_dump.buf_len);
     if ((type == PKG_TYPE_VITA_APP || type == PKG_TYPE_VITA_DLC) && (zrif_arg != NULL))
     {
-        item = vpfs_find_item(&vpfs, "sce_sys/package/work.bin");
+        vpfs_item_t* item = vpfs_find_item(&vpfs, "sce_sys/package/work.bin");
         assert(item != NULL);
-        item->offset = local_data_offset + dir_dump.buf_len + sizeof(stat_bin);
+        item->offset = (uint64_t)vpfs.header.size;
     }
 
     char path[1024] = "", *dir = (char*)dirname(pkg_arg);

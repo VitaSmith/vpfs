@@ -44,6 +44,12 @@
 #define NO_THUMB_UINT32_PTR(p)                  ((uint32_t*)((uintptr_t)p & ~1))
 #define _STR(s)                                 #s
 #define STR(s)                                  _STR(s)
+#define min(a,b)                                ({ typeof (a) _a = (a);     \
+                                                typeof (b) _b = (b);        \
+                                                _a < _b ? _a : _b; })
+#define max(a,b)                                ({ typeof (a) _a = (a);     \
+                                                typeof (b) _b = (b);        \
+                                                _a > _b ? _a : _b; })
 #define MAX_PATH                                122
 // TODO: Increase this for apps with loads of DLC
 #define MAX_VPKG                                16
@@ -59,8 +65,10 @@
 #define SCE_ERROR_ERRNO_EACCES                  0x8001000D
 #define SCE_ERROR_ERRNO_EFAULT                  0x8001000E
 #define SCE_ERROR_ERRNO_ENOTDIR                 0x80010014
+#define SCE_ERROR_ERRNO_EINVAL                  0x80010016
 #define SCE_ERROR_ERRNO_ENFILE                  0x80010017
 #define SCE_ERROR_ERRNO_EROFS                   0x8001001E
+#define SCE_ERROR_ERRNO_ENOSYS                  0x80010058
 #define SCE_KERNEL_ERROR_INVALID_ARGUMENT       0x80020003
 
 #define SceSblSsMgrForDriver_NID                0x61E9428D
@@ -70,18 +78,34 @@
 #define SceIofilemgr_NID                        0xF2FF276E
 #define SceIoClose_NID                          0XC70B8886
 
-#define SCEIODOPEN      0
-#define SCEIODREAD      1
-#define SCEIODCLOSE     2
-#define SCEIOGETSTAT    3
-#define SCEIOOPEN       4
-#define SCEIOREAD       5
+// Ther following avoids a lot of boilerplate
+#define HOOK_INIT()                             tai_hook_ref_t hook_ref = hooks[__COUNTER__].ref;   \
+                                                if (hook_ref == 0)                                  \
+                                                    return SCE_ERROR_ERRNO_EFAULT;                  \
+                                                int state;                                          \
+                                                ENTER_SYSCALL(state);
+#define HOOK_EXIT(r)                            EXIT_SYSCALL(state);                                \
+                                                return r;
 
 typedef struct
 {
     uint32_t unk_0;
     uint32_t unk_4;
 } sceIoDopenOpt, sceIoGetstatOpt, sceIoOpenOpt;
+
+typedef struct
+{
+    SceOff   offset;
+    int      whence;
+    uint32_t unk;
+} sceIoLseekOpt;
+
+typedef struct
+{
+    SceOff offset;
+    uint32_t unk_8;
+    uint32_t unk_C;
+} sceIoPreadOpt;
 
 typedef int (sceSblSsMgrAESCTRDecryptForDriver_t)(uint8_t *src, uint8_t *dst, const uint32_t size, const uint8_t *key, const uint32_t key_size, uint8_t *iv, uint32_t mask_enable);
 sceSblSsMgrAESCTRDecryptForDriver_t*            sceSblSsMgrAESCTRDecryptForDriver = NULL;
@@ -509,18 +533,14 @@ static vpfs_item_t* vpfs_find_item(uint8_t* vpfs, const char* path)
 //
 SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
 {
-    // Address the possible race condition from https://github.com/yifanlu/taiHEN/issues/12
-    if (hooks[SCEIODOPEN].ref == 0)
-        return SCE_ERROR_ERRNO_EFAULT;
-    int r, state;
+    HOOK_INIT();
     char path[MAX_PATH + sizeof(vpfs_ext)];
     char bck[sizeof(vpfs_ext)];
     size_t i;
     SceUID fd = SCE_ERROR_ERRNO_ENOENT;
-    ENTER_SYSCALL(state);
 
     // Always invoke TAI_CONTINUE
-    SceUID tai_fd = TAI_CONTINUE(SceUID, hooks[SCEIODOPEN].ref, dirname, opt);
+    SceUID tai_fd = TAI_CONTINUE(SceUID, hook_ref, dirname, opt);
 
     // Copy the user pointer to kernel space for processing
     ksceKernelStrncpyUserToKernel(path, (uintptr_t)dirname, sizeof(path) - sizeof(vpfs_ext));
@@ -578,20 +598,15 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
     printf("- sceIoDopen('%s') [OVL]: 0x%08X\n", path, fd);
 
 out:
-    EXIT_SYSCALL(state);
-    return fd;
+    HOOK_EXIT(fd);
 }
 
 int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
 {
-    // Address the possible race condition from https://github.com/yifanlu/taiHEN/issues/12
-    if (hooks[SCEIODREAD].ref == 0)
-        return SCE_ERROR_ERRNO_EFAULT;
-    int r, state;
-    ENTER_SYSCALL(state);
+    HOOK_INIT();
 
     // Always invoke TAI_CONTINUE
-    r = TAI_CONTINUE(int, hooks[SCEIODREAD].ref, fd, dir);
+    int r = TAI_CONTINUE(int, hook_ref, fd, dir);
     vfd_t* vfd = get_vfd(fd);
     if (vfd == NULL) {
         // Regular directory -> use standard call while converting any '.vpfs' file to a virtual directory
@@ -653,19 +668,15 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
 //    printf("- sceIoDread(0x%08X) [OVL]: '%s'\n", fd, name);
 
 out:
-    EXIT_SYSCALL(state);
-    return r;
+    HOOK_EXIT(r);
 }
 
 int sceIoDclose_Hook(SceUID fd)
 {
-    if (hooks[SCEIODCLOSE].ref == 0)
-        return SCE_ERROR_ERRNO_EFAULT;
-    int r, state;
-    ENTER_SYSCALL(state);
+    HOOK_INIT();
 
     // Always invoke TAI_CONTINUE
-    r = TAI_CONTINUE(int, hooks[SCEIODCLOSE].ref, fd);
+    int r = TAI_CONTINUE(int, hook_ref, fd);
     vfd_t* vfd = get_vfd(fd);
     if (vfd != NULL) {
         r = vpfs_close(fd);
@@ -678,16 +689,13 @@ int sceIoDclose_Hook(SceUID fd)
 
 int sceIoGetstat_Hook(const char* file, SceIoStat* stat, sceIoGetstatOpt *opt)
 {
-    if (hooks[SCEIOGETSTAT].ref == 0)
-        return SCE_ERROR_ERRNO_EFAULT;
-    int r, state;
-    ENTER_SYSCALL(state);
-
-    r = TAI_CONTINUE(int, hooks[SCEIOGETSTAT].ref, file, stat, opt);
+    HOOK_INIT();
     char path[MAX_PATH + sizeof(vpfs_ext)];
     char bck[sizeof(vpfs_ext)];
     size_t i;
     SceUID fd = SCE_ERROR_ERRNO_ENOENT;
+
+    int r = TAI_CONTINUE(int, hook_ref, file, stat, opt);
 
     // Copy the user pointer to kernel space for processing
     ksceKernelStrncpyUserToKernel(path, (uintptr_t)file, sizeof(path) - sizeof(vpfs_ext));
@@ -745,22 +753,18 @@ int sceIoGetstat_Hook(const char* file, SceIoStat* stat, sceIoGetstatOpt *opt)
     r = 0;
 
 out:
-    EXIT_SYSCALL(state);
-    return r;
+    HOOK_EXIT(r);
 }
 
 SceUID sceIoOpen_Hook(const char *filename, int flag, SceIoMode mode, sceIoOpenOpt *opt)
 {
-    if (hooks[SCEIOOPEN].ref == 0)
-        return SCE_ERROR_ERRNO_EFAULT;
+    HOOK_INIT();
     size_t i;
-    int r, state;
     char path[MAX_PATH + sizeof(vpfs_ext)];
     char bck[sizeof(vpfs_ext)];
-    SceUID fd = SCE_ERROR_ERRNO_ENOENT, tai_fd;
-    ENTER_SYSCALL(state);
+    SceUID fd = SCE_ERROR_ERRNO_ENOENT;
 
-    tai_fd = TAI_CONTINUE(SceUID, hooks[SCEIOOPEN].ref, filename, flag, mode, opt);
+    SceUID tai_fd = TAI_CONTINUE(SceUID, hook_ref, filename, flag, mode, opt);
 
     // Copy the user pointer to kernel space for processing
     ksceKernelStrncpyUserToKernel(path, (uintptr_t)filename, sizeof(path) - sizeof(vpfs_ext));
@@ -837,8 +841,7 @@ SceUID sceIoOpen_Hook(const char *filename, int flag, SceIoMode mode, sceIoOpenO
     printf("- sceIoOpen('%s') [OVL]: 0x%08X\n", path, fd);
 
 out:
-    EXIT_SYSCALL(state);
-    return fd;
+    HOOK_EXIT(fd);
 }
 
 // Workaround for a taiHEN bug when hooking sceIoClose()
@@ -871,66 +874,77 @@ void sceIoClose_Override(void)
 
 int sceIoClose_Hook(SceUID fd)
 {
-    int r, state;
+    int state;
     ENTER_SYSCALL(state);
 
-    r = vpfs_close(fd);
+    int r = vpfs_close(fd);
     vfd_t* vfd = get_vfd(fd);
     if ((vfd != NULL) && (vfd->fd > 0))
         ksceIoClose(vfd->fd);
     vfd->fd = 0;
     printf("- sceIoClose(0x%08X) [OVL]: 0x%08X\n", fd, r);
+
     EXIT_SYSCALL(state);
     return r;
 }
 
 int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
 {
-    if (hooks[SCEIOREAD].ref == 0)
-        return SCE_ERROR_ERRNO_EFAULT;
-    int r, state;
+    HOOK_INIT();
     uint8_t kdata[512];
-    ENTER_SYSCALL(state);
 
-    r = TAI_CONTINUE(int, hooks[SCEIOREAD].ref, fd, data, size);
+    int r = TAI_CONTINUE(int, hook_ref, fd, data, size);
     if ((fd >> 16) != VPFD_MAGIC)
         goto out;
 
     vfd_t* vfd = get_vfd(fd);
-    if (vfd->item->pkg_index < 0) {
-        // Only support binary embedded files for now
-        if (vfd->item->flags != VPFS_ITEM_TYPE_BIN) {
-            printf("- sceIoRead(0x%08X) [OVL]: Item doesn't have BIN type\n", fd);
-            r = SCE_ERROR_ERRNO_EIO;
-            goto out;
+    // Make sure we don't overflow our content
+    if (vfd->offset + size > vfd->item->size)
+        size = vfd->item->size - vfd->offset;
+    SceSize data_size, data_offset;
+    switch (vfd->item->flags) {
+    case VPFS_ITEM_TYPE_ZERO:
+        memset(kdata, 0, sizeof(kdata));
+        data_size = size;
+        data_offset = 0;
+        while (data_size > 0) {
+            int read = min(data_size, sizeof(kdata));
+            ksceKernelMemcpyKernelToUser((uintptr_t)data + data_offset, &kdata, read);
+            data_size -= read;
+            data_offset += read;
+            vfd->offset += read;
         }
-        if (size > sizeof(kdata)) {
-            perr("- sceIoRead: Buffered read is not implemented yet!!\n");
-            r = SCE_ERROR_ERRNO_EIO;
-            goto out;
+        r = size;
+        break;
+    case VPFS_ITEM_TYPE_BIN:
+        data_size = size;
+        data_offset = 0;
+        while (data_size > 0) {
+            int read = min(data_size, sizeof(kdata));
+            read = ksceIoRead(vfd->fd, kdata, read);
+            if (read <= 0) {
+                r = read;
+                goto out;
+            }
+            data_size -= read;
+            ksceKernelMemcpyKernelToUser((uintptr_t)data + data_offset, &kdata, read);
+            data_offset += read;
+            vfd->offset += read;
         }
-        r = ksceIoRead(vfd->fd, kdata, size);
-        if (r <= 0)
-            goto out;
-        vfd->offset += r;
-        ksceKernelMemcpyKernelToUser((uintptr_t)data, &kdata, r);
-    } else {
-        // Only support AES CTR files for now
-        if (vfd->item->flags != VPFS_ITEM_TYPE_AES) {
-            printf("- sceIoRead(0x%08X) [OVL]: Item doesn't have AES CTR type\n", fd);
-            r = SCE_ERROR_ERRNO_EIO;
-            goto out;
-        }
+        r = size;
+        break;
+    case VPFS_ITEM_TYPE_AES:
         if (sceSblSsMgrAESCTRDecryptForDriver == NULL) {
             perr("- sceIoRead(0x%08X) [OVL]: sceSblSsMgrAESCTRDecryptForDriver() is not available\n", fd);
             r = SCE_ERROR_ERRNO_EFAULT;
             goto out;
         }
 
-        SceOff ctr_offset = vfd->offset % 16;
+        // TODO: Double buffering with async read into one buffer and CTR decrypt in the other
+        SceOff ctr_offset = vfd->offset & 0xFULL;
         if (ctr_offset != 0) {
             // Roll back to the start of our CTR segment
-            printf("- sceIoRead(0x%08X)[OVL]: CTR rollback %d bytes\n", (int)ctr_offset);
+            printf("- sceIoRead(0x%08X)[OVL]: CTR rollback %lld bytes\n", ctr_offset);
             ksceIoLseek(fd, -ctr_offset, SCE_SEEK_CUR);
             vfd->offset -= ctr_offset;
         }
@@ -947,11 +961,11 @@ int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
             block >>= 8;
         }
 
-        SceSize data_size = size + ctr_offset;
-        SceSize data_offset = 0;
+        data_size = size + ctr_offset;
+        data_offset = 0;
         // TODO: Double buffering with async read into one buffer and CTR decrypt in the other
         while (data_size > 0) {
-            int read = (data_size < sizeof(kdata)) ? data_size : sizeof(kdata);
+            int read = min(data_size, sizeof(kdata));
             // All the PKG data is padded to 16 bytes so we can extend short reads
             if (read < 16)
                 read = 16;
@@ -973,75 +987,117 @@ int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
             data_offset += read - ctr_offset;
         }
         r = size;
+        break;
+    default:
+        perr("- sceIoRead(0x%08X) [OVL]: Item type %d is not supported\n", fd, vfd->item->flags);
+        r = SCE_ERROR_ERRNO_ENOSYS;
+        goto out;
     }
     printf("- sceIoRead(0x%08X) [OVL]: 0x%08X\n", fd, r);
 
 out:
-    EXIT_SYSCALL(state);
-    return r;
+    HOOK_EXIT(r);
 }
 
-// https://wiki.henkaku.xyz/vita/SceIofilemgr
-// NB: Be mindful of the 'opt' structs in the overrides!
-// https://psp2sdk.github.io/stat_8h.html
-// https://psp2sdk.github.io/fcntl_8h.html
-//
-// Calls we'll need:
-//
-//SceUID 	sceIoOpen(const char *file, int flags, SceMode mode)
-//Open or create a file for reading or writing.More...
-//
-//SceUID 	sceIoOpenAsync(const char *file, int flags, SceMode mode)
-//Open or create a file for reading or writing(asynchronous) More...
-//
-//int 	sceIoClose(SceUID fd)
-//Delete a descriptor.More...
-//
-//int 	sceIoCloseAsync(SceUID fd)
-//Delete a descriptor(asynchronous) More...
-//
-//int 	sceIoRead(SceUID fd, void *data, SceSize size)
-//Read input.More...
-//
-//int 	sceIoReadAsync(SceUID fd, void *data, SceSize size)
-//Read input(asynchronous) More...
-//
-//int 	sceIoPread(SceUID fd, void *data, SceSize size, SceOff offset)
-//Read input at offset.More...
-//
-//int 	sceIoWrite(SceUID fd, const void *data, SceSize size)
-//Write output.More...
-//
-//int 	sceIoWriteAsync(SceUID fd, const void *data, SceSize size)
-//Write output(asynchronous) More...
-//
-//int 	sceIoPwrite(SceUID fd, const void *data, SceSize size, SceOff offset)
-//Write output at offset.More...
-//
-//SceOff 	sceIoLseek(SceUID fd, SceOff offset, int whence)
-//Reposition read / write file descriptor offset.More...
-//
-//int 	sceIoLseekAsync(SceUID fd, SceOff offset, int whence)
-//Reposition read / write file descriptor offset(asynchronous) More...
-//
-//int 	sceIoLseek32(SceUID fd, int offset, int whence)
-//Reposition read / write file descriptor offset(32bit mode) More...
-//
-//int 	sceIoRemove(const char *file)
-//Remove directory entry.More...
-//
-//int 	sceIoRename(const char *oldname, const char *newname)
-//Change the name of a file.More...
-//
-//int 	sceIoSync(const char *device, unsigned int unk)
-//Synchronize the file data on the device.More...
-//
-//int 	sceIoSyncByFd(SceUID fd)
-//Synchronize the file data for one file.More...
-//
-//int 	sceIoCancel(SceUID fd)
-//Cancel an asynchronous operation on a file descriptor.More...
+SceOff sceIoLseek_Hook(SceUID fd, sceIoLseekOpt* opt)
+{
+    HOOK_INIT();
 
+    SceOff r = TAI_CONTINUE(SceOff, hook_ref, fd, opt);
+    vfd_t* vfd = get_vfd(fd);
+    if (vfd == NULL)
+        goto out;
+    if (opt == NULL) {
+        r = SCE_ERROR_ERRNO_EINVAL;
+        goto out;
+    }
+    r = vfd->offset;
+    switch (opt->whence) {
+    case SEEK_SET:
+        r = opt->offset;
+        break;
+    case SEEK_END:
+        r = vfd->item->size + opt->offset;
+        break;
+    case SEEK_CUR:
+        r += opt->offset;
+        break;
+    default:
+        r = SCE_ERROR_ERRNO_EINVAL;
+        perr("- sceIoLseek(0x%08X) [OVL]: invalid whence value %d\n", fd, opt->whence);
+        goto out;
+    }
+    if (r < 0)
+        r = 0;
+    else if (r > vfd->item->size)
+        r = vfd->item->size;
+    vfd->offset = r;
+    // TODO: Check the return value of ksceIoLseek()
+    if (vfd->fd > 0)
+        ksceIoLseek(vfd->fd, vfd->item->offset + vfd->offset, SCE_SEEK_SET);
+    printf("- sceIoLseek(0x%08X) [OVL]: %llx\n", fd, r);
+
+out:
+    HOOK_EXIT(r);
+}
+
+int sceIoLseek32_Hook(SceUID fd, int offset, int whence)
+{
+    HOOK_INIT();
+
+    int r = TAI_CONTINUE(int, hook_ref, fd, offset, whence);
+    vfd_t* vfd = get_vfd(fd);
+    if (vfd == NULL)
+        goto out;
+    int64_t new_offset = vfd->offset;
+    switch (whence) {
+    case SEEK_SET:
+        new_offset = offset;
+        break;
+    case SEEK_END:
+        new_offset = vfd->item->size + offset;
+        break;
+    case SEEK_CUR:
+        new_offset += offset;
+        break;
+    default:
+        r = SCE_ERROR_ERRNO_EINVAL;
+        perr("- sceIoLseek32(0x%08X) [OVL]: invalid whence value %d\n", fd, whence);
+        goto out;
+    }
+    if (new_offset < 0)
+        new_offset = 0;
+    else if (new_offset > vfd->item->size)
+        new_offset = vfd->item->size;
+    vfd->offset = new_offset;
+    // TODO: Check the return value of ksceIoLseek()
+    if (vfd->fd > 0)
+        ksceIoLseek(vfd->fd, vfd->item->offset + vfd->offset, SCE_SEEK_SET);
+    r = (int)new_offset;
+    printf("- sceIoLseek32(0x%08X, 0x%08X, %d) [OVL]: 0x%08X\n", fd, offset, whence, r);
+
+out:
+    HOOK_EXIT(r);
+}
+
+// I don't think we need to care much about this one for now...
+//int sceIoPread_Hook(SceUID uid, void *buffer, SceSize size, sceIoPreadOpt *opt)
+//{
+//    if (hooks[SCEIOPREAD].ref == 0)
+//        return SCE_ERROR_ERRNO_EFAULT;
+//    int state;
+//    ENTER_SYSCALL(state);
+//
+//    printf("- sceIoPseek(0x%08X) [ORG]\n");
+//    int r = TAI_CONTINUE(int, hooks[SCEIOPREAD].ref, uid, buffer, size, opt);
+//
+//out:
+//    EXIT_SYSCALL(state);
+//    return r;
+//}
+
+// IMPORTANT: Because we are using the __COUNTER__ gcc macro, these
+// functions must appear in the same order as they are defined above.
 hook_t hooks[] = {
     { sceIoDopen_Hook, 0xE6E614B5, -1, 0 },
     { sceIoDread_Hook, 0x8713D662, -1, 0 },
@@ -1049,7 +1105,34 @@ hook_t hooks[] = {
     { sceIoGetstat_Hook, 0x8E7E11F2, -1, 0 },
     { sceIoOpen_Hook, 0xCC67B6FD, -1, 0 },
     { sceIoRead_Hook, 0xFDB32293, -1, 0 },
+    { sceIoLseek_Hook, 0xA604764A, -1, 0 },
+    { sceIoLseek32_Hook, 0x49252B9B, -1, 0 },
 };
+
+// Calls we still need:
+// - All the kernel/driver counterparts to the above
+// Calls we might still need:
+// - int sceIoGetDevType(SceUID fd) [?]
+// - int sceIoPread(SceUID fd, void *data, SceSize size, SceOff offset) [?]
+// - int sceIoWrite(SceUID fd, const void *data, SceSize size) [Should return RO error]
+// - int sceIoPwrite(SceUID fd, const void *data, SceSize size, SceOff offset) [Should return RO error]
+// - int sceIoRemove(const char *file)
+// - int sceIoRename(const char *oldname, const char *newname) [Should return RO error]
+// - int sceIoSyncByFd(SceUID fd) [?]
+// - SceUID sceIoOpenAsync(const char *file, int flags, SceMode mode)
+// - int sceIoCloseAsync(SceUID fd)
+// - int sceIoReadAsync(SceUID fd, void *data, SceSize size)
+// - int sceIoWriteAsync(SceUID fd, const void *data, SceSize size) [Should return RO error]
+// - int sceIoLseekAsync(SceUID fd, SceOff offset, int whence)
+// - int sceIoLseek32Async(SceUID fd, int offset, int whence)
+// - int sceIoWaitAsync(SceUID fd, SceInt64 *res) [?]
+// - int sceIoWaitAsyncCB(SceUID fd, SceInt64 *res) [?]
+// - int sceIoPollAsync(SceUID fd, SceInt64 *res) [?]
+// - int sceIoGetAsyncStat(SceUID fd, int poll, SceInt64 *res) [?]
+// - int sceIoCancel(SceUID fd)
+// - int sceIoGetDevType(SceUID fd) [?]
+// - int sceIoChangeAsyncPriority(SceUID fd, int pri) [?]
+// - int sceIoSetAsyncCallback(SceUID fd, SceUID cb, void *argp) [?]
 
 static void dump_hex(void *buf, size_t size)
 {
