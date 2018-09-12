@@ -68,6 +68,7 @@
 #define SCE_ERROR_ERRNO_EINVAL                  0x80010016
 #define SCE_ERROR_ERRNO_ENFILE                  0x80010017
 #define SCE_ERROR_ERRNO_EROFS                   0x8001001E
+#define SCE_ERROR_ERRNO_EBADFD                  0x80010051
 #define SCE_ERROR_ERRNO_ENOSYS                  0x80010058
 #define SCE_KERNEL_ERROR_INVALID_ARGUMENT       0x80020003
 
@@ -394,8 +395,10 @@ out:
     return i;
 }
 
-static void vpkg_close(vpkg_t* vpkg)
+static int vpkg_close(vpkg_t* vpkg)
 {
+    if (vpkg == NULL)
+        return SCE_ERROR_ERRNO_EBADFD;
     ksceKernelLockMutex(vpkg_mutex, 1, NULL);
     vpkg->refcount--;
     if (vpkg->refcount == 0) {
@@ -406,6 +409,7 @@ static void vpkg_close(vpkg_t* vpkg)
         vpkg->path[0] = 0;
     }
     ksceKernelUnlockMutex(vpkg_mutex, 1);
+    return 0;
 }
 
 static uint16_t vfd_get_index(void)
@@ -450,12 +454,12 @@ static int vpfs_close(SceUID fd)
 {
     vfd_t* vfd = get_vfd(fd);
     if (vfd == NULL)
-        return SCE_ERROR_ERRNO_EACCES;
+        return SCE_ERROR_ERRNO_EBADFD;
     ksceKernelLockMutex(vfd_mutex, 1, NULL);
-    vpkg_close(vfd->vpkg);
+    int r = vpkg_close(vfd->vpkg);
     vfd->vpkg = NULL;
     ksceKernelUnlockMutex(vfd_mutex, 1);
-    return 0;
+    return r;
 }
 
 static int sha1sum(const char* path, uint8_t* sum)
@@ -901,7 +905,8 @@ int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
     // Make sure we don't overflow our content
     if (vfd->offset + size > vfd->item->size)
         size = vfd->item->size - vfd->offset;
-    SceSize data_size, data_offset;
+    int data_size;
+    uintptr_t data_offset;
     switch (vfd->item->flags) {
     case VPFS_ITEM_TYPE_ZERO:
         memset(kdata, 0, sizeof(kdata));
@@ -944,8 +949,8 @@ int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
         SceOff ctr_offset = vfd->offset & 0xFULL;
         if (ctr_offset != 0) {
             // Roll back to the start of our CTR segment
-            printf("- sceIoRead(0x%08X)[OVL]: CTR rollback %lld bytes\n", ctr_offset);
-            ksceIoLseek(fd, -ctr_offset, SCE_SEEK_CUR);
+            SceOff new_pos = ksceIoLseek(vfd->fd, -ctr_offset, SCE_SEEK_CUR);
+            printf("- sceIoRead(0x%08X)[OVL]: CTR rollback %lld bytes (pos = 0x%llX)\n", fd, ctr_offset, new_pos);
             vfd->offset -= ctr_offset;
         }
 
@@ -963,6 +968,7 @@ int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
 
         data_size = size + ctr_offset;
         data_offset = 0;
+        bool first_pass = true;
         // TODO: Double buffering with async read into one buffer and CTR decrypt in the other
         while (data_size > 0) {
             int read = min(data_size, sizeof(kdata));
@@ -970,21 +976,23 @@ int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
             if (read < 16)
                 read = 16;
             read = ksceIoRead(vfd->fd, kdata, read);
-            if (read <= ctr_offset) {
+            if (read <= 0) {
                 r = read;
                 goto out;
             }
-            data_size -= read;
-
             // Note: This call updates the iv for us
             r = sceSblSsMgrAESCTRDecryptForDriver(kdata, kdata, read, pkg->key, 0x80, iv, 1);
             if (r < 0) {
                 perr("- sceIoRead(0x%08X) [OVL]: Could not decrypt AES CTR 0x%08X\n", fd, r);
                 goto out;
             }
+            int copied = min(read - (first_pass ? ctr_offset : 0), data_size);
+            ksceKernelMemcpyKernelToUser((uintptr_t)data + data_offset, &kdata[first_pass? ctr_offset : 0], copied);
+            // CTR offset only applies to the first read
             vfd->offset += read;
-            ksceKernelMemcpyKernelToUser((uintptr_t)data + data_offset, &kdata[ctr_offset], read - ctr_offset);
-            data_offset += read - ctr_offset;
+            data_offset += copied;
+            data_size -= copied;
+            first_pass = false;
         }
         r = size;
         break;
@@ -1002,6 +1010,7 @@ out:
 SceOff sceIoLseek_Hook(SceUID fd, sceIoLseekOpt* opt)
 {
     HOOK_INIT();
+    sceIoLseekOpt kopt;
 
     SceOff r = TAI_CONTINUE(SceOff, hook_ref, fd, opt);
     vfd_t* vfd = get_vfd(fd);
@@ -1011,20 +1020,22 @@ SceOff sceIoLseek_Hook(SceUID fd, sceIoLseekOpt* opt)
         r = SCE_ERROR_ERRNO_EINVAL;
         goto out;
     }
+    // Copy the opt data to kernel space for processing
+    ksceKernelStrncpyUserToKernel(&kopt, (uintptr_t)opt, sizeof(kopt));
     r = vfd->offset;
-    switch (opt->whence) {
+    switch (kopt.whence) {
     case SEEK_SET:
-        r = opt->offset;
+        r = kopt.offset;
         break;
     case SEEK_END:
-        r = vfd->item->size + opt->offset;
+        r = vfd->item->size + kopt.offset;
         break;
     case SEEK_CUR:
-        r += opt->offset;
+        r += kopt.offset;
         break;
     default:
         r = SCE_ERROR_ERRNO_EINVAL;
-        perr("- sceIoLseek(0x%08X) [OVL]: invalid whence value %d\n", fd, opt->whence);
+        perr("- sceIoLseek(0x%08X) [OVL]: invalid whence value %d\n", fd, kopt.whence);
         goto out;
     }
     if (r < 0)
@@ -1035,7 +1046,7 @@ SceOff sceIoLseek_Hook(SceUID fd, sceIoLseekOpt* opt)
     // TODO: Check the return value of ksceIoLseek()
     if (vfd->fd > 0)
         ksceIoLseek(vfd->fd, vfd->item->offset + vfd->offset, SCE_SEEK_SET);
-    printf("- sceIoLseek(0x%08X) [OVL]: %llx\n", fd, r);
+    printf("- sceIoLseek(0x%08X) [OVL]: 0x%llX\n", fd, r);
 
 out:
     HOOK_EXIT(r);

@@ -417,6 +417,16 @@ static bool test_close_file(SceUID fd)
     return true;
 }
 
+static bool test_xclose_file(SceUID fd, int expected)
+{
+    int r = sceIoClose(fd);
+    if (r != expected) {
+        perr("Closing of file returned 0x%08X instead of 0x%08X\n", r, expected);
+        return false;
+    }
+    return true;
+}
+
 static bool test_zero_file(SceUID fd, int size)
 {
     uint8_t* data = malloc(size);
@@ -433,7 +443,7 @@ static bool test_zero_file(SceUID fd, int size)
     for (int i = 0; i < size; i++) {
         if (data[i] != 0) {
             perr("Data from differs at offset 0x%08X:\n", i);
-            dump_hex(&data[i&(~0xF)], 16);
+            dump_hex(&data[i], 16);
             return false;
         }
     }
@@ -455,19 +465,19 @@ static bool test_read_file(SceUID fd, uint8_t* expected_data, int size)
     for (int i = 0; i < size; i++) {
         if (data[i] != expected_data[i]) {
             perr("Data from file differs at offset 0x%08X:\n", i);
-            dump_hex(&data[i&(~0xF)], 16);
-            dump_hex(&expected_data[i&(~0xF)], 16);
+            dump_hex(&data[i], 16);
+            dump_hex(&expected_data[i], 16);
             return false;
         }
     }
     return true;
 }
 
-static bool test_lseek_file(SceUID fd, SceOff offset, int whence, SceOff  expected)
+static bool test_lseek_file(SceUID fd, SceOff offset, int whence, SceOff expected)
 {
     SceOff r = sceIoLseek(fd, offset, whence);
     if (r != expected) {
-        perr("Incorrect file position: expected 0x%llX, got 0x%llX\n", expected, r);
+        perr("Incorrect file position: got 0x%llX instead of 0x%%lX\n", r, expected);
         return false;
     }
     return true;
@@ -477,7 +487,7 @@ static bool test_lseek32_file(SceUID fd, int offset, int whence, int expected)
 {
     int r = sceIoLseek32(fd, offset, whence);
     if (r != expected) {
-        perr("Incorrect file position: expected 0x%08X, got 0x%08X\n", expected, r);
+        perr("Incorrect file position: got 0x%08X instead of 0x%08X\n", r, expected);
         return false;
     }
     return true;
@@ -548,8 +558,8 @@ int main()
         test_close_file(fd);
         test_open_file("ux0:app/PCSE00001/sce_sys/package/stat.bin", &fd);
         DISPLAY_TEST("Read 'sce_sys/package/stat.bin'", test_zero_file, fd, 768);
-        // TODO: Calling sceIoClose() twice on the same vpfs fd causes a crash
-//        test_close_file(fd);
+        // Calling sceIoClose() twice on the same file returns EBADFD
+        DISPLAY_TEST("Double close of 'sce_sys/package/stat.bin'", test_xclose_file, fd, 0x80010051);
         // External unencrypted file
         test_open_file("ux0:app/PCSE00001/sce_sys/package/tail.bin", &fd);
         DISPLAY_TEST("Read 'sce_sys/package/tail.bin'", test_read_file, fd, tail_bin, sizeof(tail_bin));
@@ -557,10 +567,15 @@ int main()
         // External encrypted file
         test_open_file("ux0:app/PCSE00001/sce_sys/param.sfo", &fd);
         DISPLAY_TEST("Read 'sce_sys/param.sfo'", test_read_file, fd, param_sfo, sizeof(param_sfo));
-        const int offset = 0x94;
-        DISPLAY_TEST("Lseek32 'sce_sys/param.sfo'", test_lseek32_file, fd, -offset, SEEK_END, sizeof(param_sfo) - offset);
+        const int offset_32bit = 0x8F;
+        DISPLAY_TEST("Lseek32 'sce_sys/param.sfo'", test_lseek32_file, fd, -offset_32bit, SEEK_END, sizeof(param_sfo) - offset_32bit);
         // TODO: This currently fails if we have CTR rollback
-        DISPLAY_TEST("Read after Lseek32", test_read_file, fd, &param_sfo[sizeof(param_sfo) - offset], offset);
+        DISPLAY_TEST("Read after Lseek32", test_read_file, fd, &param_sfo[sizeof(param_sfo) - offset_32bit], offset_32bit);
+        test_close_file(fd);
+        const SceOff offset_64bit = 0x1CB;
+        test_open_file("ux0:app/PCSE00001/sce_sys/param.sfo", &fd);
+        DISPLAY_TEST("Lseek 'sce_sys/param.sfo'", test_lseek_file, fd, offset_64bit, SEEK_SET, offset_64bit);
+        DISPLAY_TEST("Read after Lseek", test_read_file, fd, &param_sfo[offset_64bit], sizeof(param_sfo) - offset_64bit);
         test_close_file(fd);
     }
     DISPLAY_TEST("VPFS module can be unloaded", module_unload);
