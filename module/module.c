@@ -85,8 +85,7 @@
                                                     return SCE_ERROR_ERRNO_EFAULT;                  \
                                                 int state;                                          \
                                                 ENTER_SYSCALL(state);
-#define HOOK_EXIT(r)                            EXIT_SYSCALL(state);                                \
-                                                return r;
+#define HOOK_EXIT(r)                            do { EXIT_SYSCALL(state); return r; } while(0)
 
 typedef struct
 {
@@ -548,18 +547,18 @@ static vpfs_item_t* vpfs_find_item(uint8_t* vpfs, const char* path)
 }
 
 //
-// Common code for hooks
+// Hooks
 //
-SceUID open_hook_internal(const char* name, char* path, int flag, SceUID tai_fd)
+SceUID ksceIoOpen_Hook(const char *filename, int flag, SceIoMode mode)
 {
-    char bck[sizeof(vpfs_ext)];
+    HOOK_INIT();
+    char path[MAX_PATH + sizeof(vpfs_ext)], bck[sizeof(vpfs_ext)];
     size_t i, len = strlen(path);
     SceUID fd = SCE_ERROR_ERRNO_EBADFD;
 
-    // We may already have a valid VPFS fd
-    if ((tai_fd >> 16) == VPFD_MAGIC)
-        return tai_fd;
+    SceUID tai_fd = TAI_CONTINUE(SceUID, hook_ref, filename, flag, mode);
 
+    memcpy(path, filename, sizeof(path) - sizeof(vpfs_ext));
     for (i = strlen(path); i > 0; i--) {
         if ((path[i] == '/') || (path[i] == 0)) {
             memcpy(bck, &path[i], sizeof(vpfs_ext));
@@ -572,36 +571,37 @@ SceUID open_hook_internal(const char* name, char* path, int flag, SceUID tai_fd)
     }
     if (i == 0) {
         // Couldn't find a relevant VPFS => use the original function call
-        printf("- %s('%s') [ORG]: 0x%08X\n", name, path, tai_fd);
-        return tai_fd;
+        printf("- ksceIoOpen('%s') [ORG]: 0x%08X\n", path, tai_fd);
+        HOOK_EXIT(tai_fd);
     }
 
     // Filter out flags that are incompatible with the read-only nature of VPFS
     if (flag & (SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND | SCE_O_TRUNC | SCE_O_DIROPEN)) {
-        printf("- %s('%s') [OVL]: 0x%08X flags are incompatible with read-only VPFS\n", name, path, flag);
-        return SCE_ERROR_ERRNO_EROFS;
+        printf("-ksceIoOpen('%s') [OVL]: 0x%08X flags are incompatible with read-only VPFS\n", path, flag);
+        HOOK_EXIT(SCE_ERROR_ERRNO_EROFS);
     }
 
     // We have an opened vfd -> process it
     vfd_t* vfd = get_vfd(fd);
-    if (vfd == NULL)
-        return SCE_ERROR_ERRNO_EFAULT;
+    if (vfd == NULL) {
+        HOOK_EXIT(SCE_ERROR_ERRNO_EFAULT);
+    }
 
     vfd->item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
     if (vfd->item == NULL) {
-        printf("- %s('%s') [OVL]: Entry not found in .vpfs\n", name, &path[i + 1]);
-        return SCE_ERROR_ERRNO_ENOENT;
+        printf("- ksceIoOpen('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
 
     // Check our data
     if (vfd->item->flags & VPFS_ITEM_DELETED) {
-        printf("- %s('%s') [OVL]: Item was deleted\n", name, path);
-        return SCE_ERROR_ERRNO_ENOENT;
+        printf("- ksceIoOpen('%s') [OVL]: Item was deleted\n", path);
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
 
     if (vfd->item->flags & VPFS_ITEM_TYPE_DIR) {
-        printf("- %s('%s') [OVL]: This is a directory\n", name, path);
-        return SCE_ERROR_ERRNO_ENOENT;
+        printf("- ksceIoOpen('%s') [OVL]: This is a directory\n", path);
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
 
     char* item_path = NULL;
@@ -616,26 +616,15 @@ SceUID open_hook_internal(const char* name, char* path, int flag, SceUID tai_fd)
     }
     vfd->fd = _ksceIoOpen(item_path, SCE_O_RDONLY, 0);
     if (vfd->fd < 0) {
-        perr("- %s [OVL]: Could not open '%s': 0x%08X\n", name, item_path, vfd->fd);
-        return vfd->fd;
+        perr("- ksceIoOpen('%s) [OVL]: Could not open '%s': 0x%08X\n", filename, item_path, vfd->fd);
+        HOOK_EXIT(vfd->fd);
     }
     if (vfd->item->pkg_index < 0)
         memcpy(&path[i], bck, sizeof(vpfs_ext));
     vfd->offset = 0;
     ksceIoLseek(vfd->fd, vfd->item->offset, SCE_SEEK_SET);
-    printf("- %s('%s') [OVL]: 0x%08X\n", name, path, fd);
-    return fd;
-}
-
-//
-// Hooks
-//
-SceUID ksceIoOpen_Hook(const char *filename, int flag, SceIoMode mode)
-{
-    HOOK_INIT();
-    char path[MAX_PATH + sizeof(vpfs_ext)];
-    memcpy(path, filename, sizeof(path) - sizeof(vpfs_ext));
-    HOOK_EXIT(open_hook_internal("ksceIoOpen", path, flag, TAI_CONTINUE(SceUID, hook_ref, filename, flag, mode)));
+    printf("- ksceIoOpen('%s') [OVL]: 0x%08X\n", path, fd);
+    HOOK_EXIT(fd);
 }
 
 int ksceIoClose_Hook(SceUID fd)
@@ -652,7 +641,7 @@ int ksceIoClose_Hook(SceUID fd)
         printf("- ksceIoClose(0x%08X) [OVL]: 0x%08X\n", fd, r);
     }
 
-    HOOK_EXIT(r)
+    HOOK_EXIT(r);
 }
 
 SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
@@ -684,44 +673,37 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
     if (i == 0) {
         // Couldn't find a relevant VPFS => use the original function call
 //        printf("- sceIoDopen('%s') [ORG]: 0x%08X\n", path, tai_fd);
-        fd = tai_fd;
-        goto out;
+        HOOK_EXIT(tai_fd);
     }
 
     memcpy(&path[i], bck, sizeof(vpfs_ext));
     // We have an opened vfd -> process it
     vfd_t* vfd = get_vfd(fd);
     if (vfd == NULL) {
-        fd = SCE_ERROR_ERRNO_EFAULT;
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_EFAULT);
     }
+
     vfd->item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
     if (vfd->item == NULL) {
         printf("- sceIoDopen('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
-        fd = SCE_ERROR_ERRNO_ENOENT;
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
 
     // Check our data
     if (!(vfd->item->flags & VPFS_ITEM_TYPE_DIR)) {
         printf("- sceIoDopen('%s') [OVL]: Item found is not a directory\n", path);
-        fd = SCE_ERROR_ERRNO_ENOTDIR;
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOTDIR);
     }
     if (vfd->item->flags & VPFS_ITEM_DELETED) {
         printf("- sceIoDopen('%s') [OVL]: Item was deleted\n", path);
-        fd = SCE_ERROR_ERRNO_ENOENT;
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
     if (vfd->item->pkg_index > 0) {
         printf("- sceIoDopen('%s') [OVL]: Directory offset is not in VPFS file\n", path);
-        fd = SCE_ERROR_ERRNO_EFAULT;
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_EFAULT);
     }
     vfd->offset = vfd->item->offset;
     printf("- sceIoDopen('%s') [OVL]: 0x%08X\n", path, fd);
-
-out:
     HOOK_EXIT(fd);
 }
 
@@ -755,7 +737,7 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
             }
         }
 //        printf("- sceIoDread(0x%08X) [ORG]: 0x%08X\n", fd, r);
-        goto out;
+        HOOK_EXIT(r);
     }
 
     // Virtual directory
@@ -763,16 +745,14 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
     size_t len = strlen(path);
     if (len == 0) {
         // No more content in this directory
-        r = 0;
-        goto out;
+        HOOK_EXIT(0);
     }
 
     SceIoStat stat = { 0 };
     vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, path);
     if (item == NULL) {
         printf("- sceIoDread('%s') [OVL]: Entry not found in .vpfs\n", path);
-        r = SCE_ERROR_ERRNO_ENOENT;
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
     // TODO: Check for VPFS_ITEM_DELETED and skip deleted items
     const char* name = basename(path);
@@ -788,17 +768,13 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
     }
     ksceKernelMemcpyKernelToUser((uintptr_t)dir, &stat, sizeof(stat));
     vfd->offset += len + 1;
-    r = 1;
 //    printf("- sceIoDread(0x%08X) [OVL]: '%s'\n", fd, name);
-
-out:
-    HOOK_EXIT(r);
+    HOOK_EXIT(1);
 }
 
 int sceIoDclose_Hook(SceUID fd)
 {
     HOOK_INIT();
-
     // Always invoke TAI_CONTINUE
     int r = TAI_CONTINUE(int, hook_ref, fd);
     vfd_t* vfd = get_vfd(fd);
@@ -806,9 +782,7 @@ int sceIoDclose_Hook(SceUID fd)
         r = vpfs_close(fd);
         printf("- sceIoDclose(0x%08X) [OVL]: 0x%08X\n", fd, r);
     }
-
-    EXIT_SYSCALL(state);
-    return r;
+    HOOK_EXIT(r);
 }
 
 int sceIoGetstat_Hook(const char* file, SceIoStat* stat, sceIoGetstatOpt *opt)
@@ -839,28 +813,25 @@ int sceIoGetstat_Hook(const char* file, SceIoStat* stat, sceIoGetstatOpt *opt)
     if (i == 0) {
         // Couldn't find a relevant VPFS => use the original function call
 //        printf("- sceIoGetstat('%s') [ORG]: 0x%08X\n", path, r);
-        goto out;
+        HOOK_EXIT(r);
     }
 
     memcpy(&path[i], bck, sizeof(vpfs_ext));
     // We have an opened vfd -> process it
     vfd_t* vfd = get_vfd(fd);
     if (vfd == NULL) {
-        r = SCE_ERROR_ERRNO_EFAULT;
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_EFAULT);
     }
     vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
     if (item == NULL) {
         printf("- sceIoGetstat('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
-        r = SCE_ERROR_ERRNO_ENOENT;
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
 
     // Check our data
     if (item->flags & VPFS_ITEM_DELETED) {
         printf("- sceIoGetstat('%s') [OVL]: Item was deleted\n", path);
-        r = SCE_ERROR_ERRNO_ENOENT;
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
     SceIoStat kstat = { 0 };
     kstat.st_ctime = vfd->vpkg->pkg_time;
@@ -874,62 +845,7 @@ int sceIoGetstat_Hook(const char* file, SceIoStat* stat, sceIoGetstatOpt *opt)
     }
     ksceKernelMemcpyKernelToUser((uintptr_t)stat, &kstat, sizeof(kstat));
     printf("- sceIoGetstat('%s') [OVL]: 0x%08X\n", path, 0);
-    r = 0;
-
-out:
-    HOOK_EXIT(r);
-}
-
-SceUID sceIoOpen_Hook(const char *filename, int flag, SceIoMode mode, sceIoOpenOpt *opt)
-{
-    HOOK_INIT();
-    char path[MAX_PATH + sizeof(vpfs_ext)];
-    ksceKernelStrncpyUserToKernel(path, (uintptr_t)filename, sizeof(path) - sizeof(vpfs_ext));
-    HOOK_EXIT(open_hook_internal("sceIoOpen", path, flag, TAI_CONTINUE(SceUID, hook_ref, filename, flag, mode, opt)));
-}
-
-// Workaround for a taiHEN bug when hooking sceIoClose()
-// See https://github.com/yifanlu/taiHEN/issues/84
-// Note that gcc's inline assembly is very restrictive, which is
-// why we can't be as elegant with this code as we'd like...
-void sceIoClose_Override(void)
-{
-    asm volatile (
-        "   lsr r1, r0, #16     \n"
-        "   mov r2, #" STR(VPFD_MAGIC) "\n"
-        "   cmp r1, r2          \n"
-        "   beq jmp_to_hook     \n"
-        // (uint32_t*) addr[3] -> compare_data (should match the start of the original call)
-        "compare_data:          \n"
-        "   push {r3-r5,lr}     \n"
-        "   mov r4, r0          \n"
-        "   ldr.w lr, [pc, #4]  \n"
-        "   ldr.w pc, [pc, #4]  \n"
-        // (uint32_t*) addr[6] -> override_lr
-        "   nop; nop            \n"
-        // (uint32_t*) addr[7] -> override_pc
-        "   nop; nop            \n"
-        "jmp_to_hook:           \n"
-        "   ldr.w pc, [pc, #0]  \n"
-        // (uint32_t*) addr[9] -> sceIoClose_Hook address
-        "   nop; nop            \n"
-    );
-}
-
-int sceIoClose_Hook(SceUID fd)
-{
-    int state;
-    ENTER_SYSCALL(state);
-
-    int r = vpfs_close(fd);
-    vfd_t* vfd = get_vfd(fd);
-    if ((vfd != NULL) && (vfd->fd > 0))
-        _ksceIoClose(vfd->fd);
-    vfd->fd = 0;
-    printf("- sceIoClose(0x%08X) [OVL]: 0x%08X\n", fd, r);
-
-    EXIT_SYSCALL(state);
-    return r;
+    HOOK_EXIT(0);
 }
 
 int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
@@ -938,8 +854,9 @@ int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
     uint8_t kdata[512];
 
     int r = TAI_CONTINUE(int, hook_ref, fd, data, size);
-    if ((fd >> 16) != VPFD_MAGIC)
-        goto out;
+    if ((fd >> 16) != VPFD_MAGIC) {
+        HOOK_EXIT(r);
+    }
 
     vfd_t* vfd = get_vfd(fd);
     // Make sure we don't overflow our content
@@ -968,8 +885,7 @@ int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
             int read = min(data_size, sizeof(kdata));
             read = ksceIoRead(vfd->fd, kdata, read);
             if (read <= 0) {
-                r = read;
-                goto out;
+                HOOK_EXIT(read);
             }
             data_size -= read;
             ksceKernelMemcpyKernelToUser((uintptr_t)data + data_offset, &kdata, read);
@@ -981,8 +897,7 @@ int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
     case VPFS_ITEM_TYPE_AES:
         if (sceSblSsMgrAESCTRDecryptForDriver == NULL) {
             perr("- sceIoRead(0x%08X) [OVL]: sceSblSsMgrAESCTRDecryptForDriver() is not available\n", fd);
-            r = SCE_ERROR_ERRNO_EFAULT;
-            goto out;
+            HOOK_EXIT(SCE_ERROR_ERRNO_EFAULT);
         }
 
         // TODO: Double buffering with async read into one buffer and CTR decrypt in the other
@@ -1017,14 +932,13 @@ int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
                 read = 16;
             read = ksceIoRead(vfd->fd, kdata, read);
             if (read <= 0) {
-                r = read;
-                goto out;
+                HOOK_EXIT(read);
             }
             // Note: This call updates the iv for us
             r = sceSblSsMgrAESCTRDecryptForDriver(kdata, kdata, read, pkg->key, 0x80, iv, 1);
             if (r < 0) {
                 perr("- sceIoRead(0x%08X) [OVL]: Could not decrypt AES CTR 0x%08X\n", fd, r);
-                goto out;
+                HOOK_EXIT(r);
             }
             int copied = min(read - (first_pass ? ctr_offset : 0), data_size);
             ksceKernelMemcpyKernelToUser((uintptr_t)data + data_offset, &kdata[first_pass? ctr_offset : 0], copied);
@@ -1038,12 +952,9 @@ int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
         break;
     default:
         perr("- sceIoRead(0x%08X) [OVL]: Item type %d is not supported\n", fd, vfd->item->flags);
-        r = SCE_ERROR_ERRNO_ENOSYS;
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOSYS);
     }
     printf("- sceIoRead(0x%08X) [OVL]: 0x%08X\n", fd, r);
-
-out:
     HOOK_EXIT(r);
 }
 
@@ -1054,11 +965,11 @@ SceOff sceIoLseek_Hook(SceUID fd, sceIoLseekOpt* opt)
 
     SceOff r = TAI_CONTINUE(SceOff, hook_ref, fd, opt);
     vfd_t* vfd = get_vfd(fd);
-    if (vfd == NULL)
-        goto out;
+    if (vfd == NULL) {
+        HOOK_EXIT(r);
+    }
     if (opt == NULL) {
-        r = SCE_ERROR_ERRNO_EINVAL;
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_EINVAL);
     }
     // Copy the opt data to kernel space for processing
     ksceKernelStrncpyUserToKernel(&kopt, (uintptr_t)opt, sizeof(kopt));
@@ -1074,9 +985,8 @@ SceOff sceIoLseek_Hook(SceUID fd, sceIoLseekOpt* opt)
         r += kopt.offset;
         break;
     default:
-        r = SCE_ERROR_ERRNO_EINVAL;
         perr("- sceIoLseek(0x%08X) [OVL]: invalid whence value %d\n", fd, kopt.whence);
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_EINVAL);
     }
     if (r < 0)
         r = 0;
@@ -1087,8 +997,6 @@ SceOff sceIoLseek_Hook(SceUID fd, sceIoLseekOpt* opt)
     if (vfd->fd > 0)
         ksceIoLseek(vfd->fd, vfd->item->offset + vfd->offset, SCE_SEEK_SET);
     printf("- sceIoLseek(0x%08X) [OVL]: 0x%llX\n", fd, r);
-
-out:
     HOOK_EXIT(r);
 }
 
@@ -1098,8 +1006,9 @@ int sceIoLseek32_Hook(SceUID fd, int offset, int whence)
 
     int r = TAI_CONTINUE(int, hook_ref, fd, offset, whence);
     vfd_t* vfd = get_vfd(fd);
-    if (vfd == NULL)
-        goto out;
+    if (vfd == NULL) {
+        HOOK_EXIT(r);
+    }
     int64_t new_offset = vfd->offset;
     switch (whence) {
     case SEEK_SET:
@@ -1112,9 +1021,8 @@ int sceIoLseek32_Hook(SceUID fd, int offset, int whence)
         new_offset += offset;
         break;
     default:
-        r = SCE_ERROR_ERRNO_EINVAL;
         perr("- sceIoLseek32(0x%08X) [OVL]: invalid whence value %d\n", fd, whence);
-        goto out;
+        HOOK_EXIT(SCE_ERROR_ERRNO_EINVAL);
     }
     if (new_offset < 0)
         new_offset = 0;
@@ -1126,43 +1034,29 @@ int sceIoLseek32_Hook(SceUID fd, int offset, int whence)
         ksceIoLseek(vfd->fd, vfd->item->offset + vfd->offset, SCE_SEEK_SET);
     r = (int)new_offset;
     printf("- sceIoLseek32(0x%08X, 0x%08X, %d) [OVL]: 0x%08X\n", fd, offset, whence, r);
-
-out:
     HOOK_EXIT(r);
 }
 
-// If we don't also override the ksceKernelCreateUserUid *import* from SceIofilemgr then,
-// because sceIoOpen() is calling ksceIoOpen() behind the scenes and then calling
-// ksceKernelCreateUserUid() on the kernel fd, we would have an issue with leaked VPFS
-// fds. So we override this call.
-// The other option would be to always try to open as a VPFS and only call TAI_CONTINUE
-// when that fails (but then we would break chain hooking when dealing with out stuff).
-// That's kind of what we do in sceIoClose() because of the taiHEN bug anyway...
-// Yet another possible option, if all the user calls are translated to kernel ones
-// internally, would would be not to hook the user calls at all, and only do so for the
-// kernel ones, and then let ksceKernelCreateUserUid() and ksceKernelKernelUidForUserUid()
-// hook translate our stuff...
+// We override the ksceKernelCreateUserUid & ksceKernelKernelUidForUserUid *imports*
+// from SceIofilemgr because the user sceIo####() calls are calling the ksceIo####()
+// versions behind the scenes, and then converting the SceUID fds.
 SceUID ksceKernelCreateUserUid_Hook(SceUID pid, SceUID uid)
 {
     HOOK_INIT();
-
     SceUID r = TAI_CONTINUE(SceUID, hook_ref, pid, uid);
     if ((uid >> 16) == VPFD_MAGIC)
         r = uid;
 //    printf("- ksceKernelCreateUserUid(0x%08X, 0x%08X) [ORG]: 0x%08X\n", pid, uid, r);
-
     HOOK_EXIT(r);
 }
 
 SceUID ksceKernelKernelUidForUserUid_Hook(SceUID pid, SceUID uid)
 {
     HOOK_INIT();
-
     SceUID r = TAI_CONTINUE(SceUID, hook_ref, pid, uid);
     if ((uid >> 16) == VPFD_MAGIC)
         r = uid;
 //    printf("- ksceKernelKernelUidForUserUid(0x%08X, 0x%08X) [ORG]: 0x%08X\n", pid, uid, r);
-
     HOOK_EXIT(r);
 }
 
@@ -1193,7 +1087,6 @@ hook_t hooks[] = {
     { sceIoDread_Hook, 0x8713D662, -1, 0, false },
     { sceIoDclose_Hook, 0x422A221A, -1, 0, false },
     { sceIoGetstat_Hook, 0x8E7E11F2, -1, 0, false },
-    { sceIoOpen_Hook, 0xCC67B6FD, -1, 0, false },
     { sceIoRead_Hook, 0xFDB32293, -1, 0, false, },
     { sceIoLseek_Hook, 0xA604764A, -1, 0, false },
     { sceIoLseek32_Hook, 0x49252B9B, -1, 0, false },
@@ -1228,40 +1121,6 @@ hook_t hooks[] = {
 // - int sceIoChangeAsyncPriority(SceUID fd, int pri) [?]
 // - int sceIoSetAsyncCallback(SceUID fd, SceUID cb, void *argp) [?]
 
-static void dump_hex(void *buf, size_t size)
-{
-#define lprintf(...) snprintf(&line[strlen(line)], sizeof(line) - strlen(line) - 1, __VA_ARGS__)
-    unsigned char* buffer = (unsigned char*)buf;
-    size_t i, j, k;
-    char line[80] = "";
-
-    for (i = 0; i < size; i += 16) {
-        if (i != 0)
-            printf("%s\n", line);
-        line[0] = 0;
-        lprintf("%08x  ", ((uintptr_t)buf) + i);
-        for (j = 0, k = 0; k < 16; j++, k++) {
-            if (i + j < size) {
-                lprintf("%02x", buffer[i + j]);
-            } else {
-                lprintf("  ");
-            }
-            lprintf(" ");
-        }
-    }
-    printf("%s\n", line);
-}
-
-// Shamelessly stolen from taiHEN
-static void unrestricted_write32(void* dst, uint32_t data)
-{
-    ksceKernelCpuUnrestrictedMemcpy(dst, &data, sizeof(data));
-    uintptr_t vma_align = (uintptr_t)dst & ~0x1F;
-    size_t len = (((uintptr_t)dst + sizeof(data) + 0x1F) & ~0x1F) - vma_align;
-    ksceKernelCpuDcacheWritebackInvalidateRange((void *)vma_align, len);
-    ksceKernelCpuIcacheAndL2WritebackInvalidateRange((void *)vma_align, len);
-}
-
 // Module start/stop
 void _start() __attribute__((weak, alias("module_start")));
 int module_start(SceSize argc, const void *args)
@@ -1284,41 +1143,7 @@ int module_start(SceSize argc, const void *args)
     if (r < 0)
         perr("Could not set sceSblSsMgrSHA1ForDriver: 0x%08X\n", r);
 
-    // Need to hook sceIoClose() manually since taiHEN can't handle it without crashing
-    // See https://github.com/yifanlu/taiHEN/issues/84
-    r = module_get_export_func(KERNEL_PID, "SceIofilemgr", SceIofilemgr_NID,
-        SceIoClose_NID, (uintptr_t*)&sceIoClose_Addr);
-
-    // First 4 bytes should match duplicate code from our override
-    // Next 4 bytes should be a long form 'blx'
-    if ((NO_THUMB_UINT32_PTR(sceIoClose_Addr)[0] != NO_THUMB_UINT32_PTR(sceIoClose_Override)[3]) ||
-        ((NO_THUMB_UINT32_PTR(sceIoClose_Addr)[1] & 0xf800f800) != ASM_BLX_LONG_FORM)) {
-        perr("Can't hook sceIoClose(): The code differs from what we can handle!\n");
-        dump_hex(sceIoClose_Addr, 0x20);
-        return SCE_KERNEL_START_FAILED;
-    } else {
-        // 0. Reconstruct the blx offset
-        uintptr_t offset = (NO_THUMB_UINT32_PTR(sceIoClose_Addr)[1] & 0x7ff) << 12;
-        offset |= ((NO_THUMB_UINT32_PTR(sceIoClose_Addr)[1] >> 16) & 0x7ff) << 1;
-        offset += 4;
-        // 1. set the pointers in our override sceIoClose code
-        unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Override)[6], (uintptr_t)sceIoClose_Addr + 8);
-        // blx jumps into an ARM call so make sure we clear the THUMB bit before adding the offset
-        unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Override)[7], (uintptr_t)NO_THUMB_UINT32_PTR(sceIoClose_Addr) + offset);
-        unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Override)[9], (uintptr_t)sceIoClose_Hook);
-
-        // 2. Keep a backup of the bytes we are going to overwrite from the original sceIoClose()
-        sceIoClose_Backup[0] = NO_THUMB_UINT32_PTR(sceIoClose_Addr)[0];
-        sceIoClose_Backup[1] = NO_THUMB_UINT32_PTR(sceIoClose_Addr)[1];
-
-        // 3. Replace the beginning of the original sceIoClose() to jump to our override
-        // Do it in 2 steps by inserting a "return 0", so that we don't have to bother about atomicity
-        unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Addr)[0], ASM_RETURN_0);
-        unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Addr)[1], (uintptr_t)sceIoClose_Override);
-        unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Addr)[0], ASM_JUMP_TO_ADDRESS_BELOW);
-    }
-
-    // Set the other file system hooks
+    // Set the file system hooks
     for (int i = 0; i < ARRAYSIZE(hooks); i++) {
         hooks[i].id = hooks[i].import?
             taiHookFunctionImportForKernel(KERNEL_PID, &hooks[i].ref, "SceIofilemgr", TAI_ANY_LIBRARY, hooks[i].nid, hooks[i].func) :
@@ -1331,13 +1156,6 @@ int module_start(SceSize argc, const void *args)
 int module_stop(SceSize argc, const void *args)
 {
     printf("Unloading VPFS kernel driver...\n");
-    if (sceIoClose_Addr != NULL) {
-        // Restore sceIoClose(), once again in 2 steps
-        unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Addr)[0], ASM_RETURN_0);
-        unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Addr)[1], sceIoClose_Backup[1]);
-        unrestricted_write32(&NO_THUMB_UINT32_PTR(sceIoClose_Addr)[0], sceIoClose_Backup[0]);
-    }
-
     for (int i = ARRAYSIZE(hooks) - 1; i >= 0; i--) {
         if (hooks[i].id >= 0)
             taiHookReleaseForKernel(hooks[i].id, hooks[i].ref);
