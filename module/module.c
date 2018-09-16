@@ -77,7 +77,6 @@
 #define SceSblSsMgrSHA1ForDriver_NID            0xEB3AF9B5
 #define SceIofilemgrForDriver_NID               0x40FD29C7
 #define SceIofilemgr_NID                        0xF2FF276E
-#define SceIoClose_NID                          0XC70B8886
 
 // Ther following avoids a lot of boilerplate
 #define HOOK_INIT()                             tai_hook_ref_t hook_ref = hooks[__COUNTER__].ref;   \
@@ -630,7 +629,6 @@ SceUID ksceIoOpen_Hook(const char *filename, int flag, SceIoMode mode)
 int ksceIoClose_Hook(SceUID fd)
 {
     HOOK_INIT();
-
     int r = TAI_CONTINUE(int, hook_ref, fd);
     if ((fd >> 16) == VPFD_MAGIC) {
         r = vpfs_close(fd);
@@ -640,11 +638,10 @@ int ksceIoClose_Hook(SceUID fd)
         vfd->fd = 0;
         printf("- ksceIoClose(0x%08X) [OVL]: 0x%08X\n", fd, r);
     }
-
     HOOK_EXIT(r);
 }
 
-SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
+SceUID ksceIoDopen_Hook(const char *dirname)
 {
     HOOK_INIT();
     char path[MAX_PATH + sizeof(vpfs_ext)];
@@ -652,11 +649,10 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
     size_t i;
     SceUID fd = SCE_ERROR_ERRNO_ENOENT;
 
-    // Always invoke TAI_CONTINUE
-    SceUID tai_fd = TAI_CONTINUE(SceUID, hook_ref, dirname, opt);
+    SceUID tai_fd = TAI_CONTINUE(SceUID, hook_ref, dirname);
 
-    // Copy the user pointer to kernel space for processing
-    ksceKernelStrncpyUserToKernel(path, (uintptr_t)dirname, sizeof(path) - sizeof(vpfs_ext));
+    // Copy the path for processing
+    memcpy(path, dirname, sizeof(path) - sizeof(vpfs_ext));
     size_t len = strlen(path);
     if (path[len - 1] == '/')
         path[--len] = 0;
@@ -672,7 +668,7 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
     }
     if (i == 0) {
         // Couldn't find a relevant VPFS => use the original function call
-//        printf("- sceIoDopen('%s') [ORG]: 0x%08X\n", path, tai_fd);
+//        printf("- ksceIoDopen('%s') [ORG]: 0x%08X\n", path, tai_fd);
         HOOK_EXIT(tai_fd);
     }
 
@@ -685,29 +681,29 @@ SceUID sceIoDopen_Hook(const char *dirname, sceIoDopenOpt *opt)
 
     vfd->item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
     if (vfd->item == NULL) {
-        printf("- sceIoDopen('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
+        printf("- ksceIoDopen('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
 
     // Check our data
     if (!(vfd->item->flags & VPFS_ITEM_TYPE_DIR)) {
-        printf("- sceIoDopen('%s') [OVL]: Item found is not a directory\n", path);
+        printf("- ksceIoDopen('%s') [OVL]: Item found is not a directory\n", path);
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOTDIR);
     }
     if (vfd->item->flags & VPFS_ITEM_DELETED) {
-        printf("- sceIoDopen('%s') [OVL]: Item was deleted\n", path);
+        printf("- ksceIoDopen('%s') [OVL]: Item was deleted\n", path);
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
     if (vfd->item->pkg_index > 0) {
-        printf("- sceIoDopen('%s') [OVL]: Directory offset is not in VPFS file\n", path);
+        printf("- ksceIoDopen('%s') [OVL]: Directory offset is not in VPFS file\n", path);
         HOOK_EXIT(SCE_ERROR_ERRNO_EFAULT);
     }
     vfd->offset = vfd->item->offset;
-    printf("- sceIoDopen('%s') [OVL]: 0x%08X\n", path, fd);
+    printf("- ksceIoDopen('%s') [OVL]: 0x%08X\n", path, fd);
     HOOK_EXIT(fd);
 }
 
-int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
+int ksceIoDread_Hook(SceUID fd, SceIoDirent *dir)
 {
     HOOK_INIT();
 
@@ -719,24 +715,18 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
         if (r == 1) {
             // Check if one of the files has a .vpfs extension and alter its properties
             // so that the querying application will see it as a virtual directory.
-            char path[sizeof(dir->d_name)];
-            ksceKernelMemcpyUserToKernel(path, (uintptr_t)dir->d_name, sizeof(dir->d_name));
-            size_t len = strlen(path);
+            size_t len = strlen(dir->d_name);
             if (len >= sizeof(vpfs_ext)) {
-                if (strcmp(&path[len - sizeof(vpfs_ext) + 1], vpfs_ext) == 0) {
+                if (strcmp(&dir->d_name[len - sizeof(vpfs_ext) + 1], vpfs_ext) == 0) {
                     // Copy the path back with the ".vpfs" extension removed
-                    path[len - sizeof(vpfs_ext) + 1] = 0;
-                    ksceKernelMemcpyKernelToUser((uintptr_t)dir->d_name, path, len - sizeof(vpfs_ext) + 2);
+                    dir->d_name[len - sizeof(vpfs_ext) + 1] = 0;
                     // Remove the regular file mode and set the directory mode
-                    SceIoStat stat;
-                    ksceKernelMemcpyUserToKernel(&stat, (uintptr_t)dir, sizeof(stat));
-                    stat.st_mode &= ~SCE_S_IFREG;
-                    stat.st_mode |= SCE_S_IFDIR;
-                    ksceKernelMemcpyKernelToUser((uintptr_t)dir, &stat, sizeof(stat));
+                    dir->d_stat.st_mode &= ~SCE_S_IFREG;
+                    dir->d_stat.st_mode |= SCE_S_IFDIR;
                 }
             }
         }
-//        printf("- sceIoDread(0x%08X) [ORG]: 0x%08X\n", fd, r);
+//        printf("- ksceIoDread(0x%08X) [ORG]: 0x%08X\n", fd, r);
         HOOK_EXIT(r);
     }
 
@@ -748,39 +738,37 @@ int sceIoDread_Hook(SceUID fd, SceIoDirent *dir)
         HOOK_EXIT(0);
     }
 
-    SceIoStat stat = { 0 };
+    memset(&dir->d_stat, 0, sizeof(dir->d_stat));
     vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, path);
     if (item == NULL) {
-        printf("- sceIoDread('%s') [OVL]: Entry not found in .vpfs\n", path);
+        printf("- ksceIoDread('%s') [OVL]: Entry not found in .vpfs\n", path);
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
     // TODO: Check for VPFS_ITEM_DELETED and skip deleted items
     const char* name = basename(path);
-    ksceKernelMemcpyKernelToUser((uintptr_t)dir->d_name, name, strlen(name) + 1);
-    stat.st_ctime = vfd->vpkg->pkg_time;
-    stat.st_atime = vfd->vpkg->pkg_time;
-    stat.st_mtime = vfd->vpkg->pkg_time;
+    memcpy(dir->d_name, name, strlen(name) + 1);
+    dir->d_stat.st_ctime = vfd->vpkg->pkg_time;
+    dir->d_stat.st_atime = vfd->vpkg->pkg_time;
+    dir->d_stat.st_mtime = vfd->vpkg->pkg_time;
     if (item->flags & VPFS_ITEM_TYPE_DIR) {
-        stat.st_mode = SCE_S_IFDIR | SCE_S_IRUSR | SCE_S_IROTH;
+        dir->d_stat.st_mode = SCE_S_IFDIR | SCE_S_IRUSR | SCE_S_IROTH;
     } else {
-        stat.st_mode = SCE_S_IFREG | SCE_S_IRUSR | SCE_S_IROTH;
-        stat.st_size = item->size;
+        dir->d_stat.st_mode = SCE_S_IFREG | SCE_S_IRUSR | SCE_S_IROTH;
+        dir->d_stat.st_size = item->size;
     }
-    ksceKernelMemcpyKernelToUser((uintptr_t)dir, &stat, sizeof(stat));
     vfd->offset += len + 1;
-//    printf("- sceIoDread(0x%08X) [OVL]: '%s'\n", fd, name);
+//    printf("- ksceIoDread(0x%08X) [OVL]: '%s'\n", fd, name);
     HOOK_EXIT(1);
 }
 
-int sceIoDclose_Hook(SceUID fd)
+int ksceIoDclose_Hook(SceUID fd)
 {
     HOOK_INIT();
     // Always invoke TAI_CONTINUE
     int r = TAI_CONTINUE(int, hook_ref, fd);
-    vfd_t* vfd = get_vfd(fd);
-    if (vfd != NULL) {
+    if ((fd >> 16) == VPFD_MAGIC) {
         r = vpfs_close(fd);
-        printf("- sceIoDclose(0x%08X) [OVL]: 0x%08X\n", fd, r);
+        printf("- ksceIoDclose(0x%08X) [OVL]: 0x%08X\n", fd, r);
     }
     HOOK_EXIT(r);
 }
@@ -1037,7 +1025,7 @@ int sceIoLseek32_Hook(SceUID fd, int offset, int whence)
     HOOK_EXIT(r);
 }
 
-// We override the ksceKernelCreateUserUid & ksceKernelKernelUidForUserUid *imports*
+// We override the ksceKernelCreateUserUid & ksceCreateKernelUid *imports*
 // from SceIofilemgr because the user sceIo####() calls are calling the ksceIo####()
 // versions behind the scenes, and then converting the SceUID fds.
 SceUID ksceKernelCreateUserUid_Hook(SceUID pid, SceUID uid)
@@ -1046,17 +1034,19 @@ SceUID ksceKernelCreateUserUid_Hook(SceUID pid, SceUID uid)
     SceUID r = TAI_CONTINUE(SceUID, hook_ref, pid, uid);
     if ((uid >> 16) == VPFD_MAGIC)
         r = uid;
-//    printf("- ksceKernelCreateUserUid(0x%08X, 0x%08X) [ORG]: 0x%08X\n", pid, uid, r);
+//    printf("- ksceKernelCreateUserUid(0x%08X, 0x%08X): 0x%08X\n", pid, uid, r);
     HOOK_EXIT(r);
 }
 
-SceUID ksceKernelKernelUidForUserUid_Hook(SceUID pid, SceUID uid)
+// Look, I don't care who derived 'ksceKernelKernelUidForUserUid', but that name
+// is just wrong. The REAL name is ksceKernelCreateKernelUid().
+SceUID ksceKernelCreateKernelUid_Hook(SceUID pid, SceUID uid)
 {
     HOOK_INIT();
     SceUID r = TAI_CONTINUE(SceUID, hook_ref, pid, uid);
     if ((uid >> 16) == VPFD_MAGIC)
         r = uid;
-//    printf("- ksceKernelKernelUidForUserUid(0x%08X, 0x%08X) [ORG]: 0x%08X\n", pid, uid, r);
+//    printf("- ksceKernelCreateKernelUid(0x%08X, 0x%08X): 0x%08X\n", pid, uid, r);
     HOOK_EXIT(r);
 }
 
@@ -1083,15 +1073,15 @@ SceUID ksceKernelKernelUidForUserUid_Hook(SceUID pid, SceUID uid)
 hook_t hooks[] = {
     { ksceIoOpen_Hook, 0x75192972, -1, 0, false },
     { ksceIoClose_Hook, 0xF99DD8A3, -1, 0, false },
-    { sceIoDopen_Hook, 0xE6E614B5, -1, 0, false },
-    { sceIoDread_Hook, 0x8713D662, -1, 0, false },
-    { sceIoDclose_Hook, 0x422A221A, -1, 0, false },
+    { ksceIoDopen_Hook, 0x463B25CC, -1, 0, false },
+    { ksceIoDread_Hook, 0x20CF5FC7, -1, 0, false },
+    { ksceIoDclose_Hook, 0x19C81DD6, -1, 0, false },
     { sceIoGetstat_Hook, 0x8E7E11F2, -1, 0, false },
     { sceIoRead_Hook, 0xFDB32293, -1, 0, false, },
     { sceIoLseek_Hook, 0xA604764A, -1, 0, false },
     { sceIoLseek32_Hook, 0x49252B9B, -1, 0, false },
     { ksceKernelCreateUserUid_Hook, 0xBF209859, -1, 0, true },
-    { ksceKernelKernelUidForUserUid_Hook, 0x45D22597, -1, 0, true },
+    { ksceKernelCreateKernelUid_Hook, 0x45D22597, -1, 0, true },
 };
 
 // https://docs.vitasdk.org/group__SceFcntlUser.html
