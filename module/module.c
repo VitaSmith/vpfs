@@ -88,12 +88,6 @@
 
 typedef struct
 {
-    uint32_t unk_0;
-    uint32_t unk_4;
-} sceIoDopenOpt, sceIoGetstatOpt, sceIoOpenOpt;
-
-typedef struct
-{
     SceOff   offset;
     int      whence;
     uint32_t unk;
@@ -166,6 +160,11 @@ SceUID _ksceIoOpen(const char *filename, int flag, SceIoMode mode)
 int _ksceIoClose(SceUID fd)
 {
     return (hooks[1].ref) ? TAI_CONTINUE(int, hooks[1].ref, fd) : ksceIoClose(fd);
+}
+
+int _ksceIoGetstat(const char *name, SceIoStat *stat)
+{
+    return (hooks[2].ref) ? TAI_CONTINUE(int, hooks[2].ref, name, stat) : ksceIoGetstat(name, stat);
 }
 
 // Log functions
@@ -336,7 +335,7 @@ static int vpkg_open(const char *path)
             SceIoStat stat;
 
             // First, check if the VPFS path exists and is a regular file
-            if ((ksceIoGetstat(path, &stat) < 0) || (!SCE_S_ISREG(stat.st_mode))) {
+            if ((_ksceIoGetstat(path, &stat) < 0) || (!SCE_S_ISREG(stat.st_mode))) {
                 i = SCE_ERROR_ERRNO_ENOENT;
                 goto out;
             }
@@ -641,6 +640,71 @@ int ksceIoClose_Hook(SceUID fd)
     HOOK_EXIT(r);
 }
 
+// NB: There's a sceIoGetstatForDriver_2 as well...
+int ksceIoGetstat_Hook(const char* file, SceIoStat* stat)
+{
+    HOOK_INIT();
+    char path[MAX_PATH + sizeof(vpfs_ext)];
+    char bck[sizeof(vpfs_ext)];
+    size_t i;
+    SceUID fd = SCE_ERROR_ERRNO_ENOENT;
+
+    int r = TAI_CONTINUE(int, hook_ref, file, stat);
+
+    memcpy(path, file, sizeof(path) - sizeof(vpfs_ext));
+    size_t len = strlen(path);
+    if (path[len - 1] == '/')
+        path[--len] = 0;
+    for (i = len; i > 0; i--) {
+        if ((path[i] == '/') || (path[i] == 0)) {
+            memcpy(bck, &path[i], sizeof(vpfs_ext));
+            memcpy(&path[i], vpfs_ext, sizeof(vpfs_ext));
+            fd = vpfs_open(path);
+            if (fd >= 0)
+                break;
+            memcpy(&path[i], bck, sizeof(vpfs_ext));
+        }
+    }
+    if (i == 0) {
+        // Couldn't find a relevant VPFS => use the original function call
+//        printf("- ksceIoGetstat('%s') [ORG]: 0x%08X\n", path, r);
+        HOOK_EXIT(r);
+    }
+
+    memcpy(&path[i], bck, sizeof(vpfs_ext));
+    if (path[i] != 0)
+        i++;
+
+    // We have an opened vfd -> process it
+    vfd_t* vfd = get_vfd(fd);
+    if (vfd == NULL) {
+        HOOK_EXIT(SCE_ERROR_ERRNO_EFAULT);
+    }
+    vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, &path[i]);
+    if (item == NULL) {
+        printf("- ksceIoGetstat('%s') [OVL]: '%s' Entry not found in .vpfs\n", file, &path[i]);
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
+    }
+
+    // Check our data
+    if (item->flags & VPFS_ITEM_DELETED) {
+        printf("- ksceIoGetstat('%s') [OVL]: '%s' item was deleted\n", file, path);
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
+    }
+    memset(stat, 0, sizeof(SceIoStat));
+    stat->st_ctime = vfd->vpkg->pkg_time;
+    stat->st_atime = vfd->vpkg->pkg_time;
+    stat->st_mtime = vfd->vpkg->pkg_time;
+    if (item->flags & VPFS_ITEM_TYPE_DIR) {
+        stat->st_mode = SCE_S_IFDIR | SCE_S_IRUSR | SCE_S_IROTH;
+    } else {
+        stat->st_mode = SCE_S_IFREG | SCE_S_IRUSR | SCE_S_IROTH;
+        stat->st_size = item->size;
+    }
+    printf("- ksceIoGetstat('%s') [OVL]: 0x%08X\n", path, 0);
+    HOOK_EXIT(0);
+}
+
 SceUID ksceIoDopen_Hook(const char *dirname)
 {
     HOOK_INIT();
@@ -771,69 +835,6 @@ int ksceIoDclose_Hook(SceUID fd)
         printf("- ksceIoDclose(0x%08X) [OVL]: 0x%08X\n", fd, r);
     }
     HOOK_EXIT(r);
-}
-
-int sceIoGetstat_Hook(const char* file, SceIoStat* stat, sceIoGetstatOpt *opt)
-{
-    HOOK_INIT();
-    char path[MAX_PATH + sizeof(vpfs_ext)];
-    char bck[sizeof(vpfs_ext)];
-    size_t i;
-    SceUID fd = SCE_ERROR_ERRNO_ENOENT;
-
-    int r = TAI_CONTINUE(int, hook_ref, file, stat, opt);
-
-    // Copy the user pointer to kernel space for processing
-    ksceKernelStrncpyUserToKernel(path, (uintptr_t)file, sizeof(path) - sizeof(vpfs_ext));
-    size_t len = strlen(path);
-    if (path[len - 1] == '/')
-        path[--len] = 0;
-    for (i = len; i > 0; i--) {
-        if ((path[i] == '/') || (path[i] == 0)) {
-            memcpy(bck, &path[i], sizeof(vpfs_ext));
-            memcpy(&path[i], vpfs_ext, sizeof(vpfs_ext));
-            fd = vpfs_open(path);
-            if (fd >= 0)
-                break;
-            memcpy(&path[i], bck, sizeof(vpfs_ext));
-        }
-    }
-    if (i == 0) {
-        // Couldn't find a relevant VPFS => use the original function call
-//        printf("- sceIoGetstat('%s') [ORG]: 0x%08X\n", path, r);
-        HOOK_EXIT(r);
-    }
-
-    memcpy(&path[i], bck, sizeof(vpfs_ext));
-    // We have an opened vfd -> process it
-    vfd_t* vfd = get_vfd(fd);
-    if (vfd == NULL) {
-        HOOK_EXIT(SCE_ERROR_ERRNO_EFAULT);
-    }
-    vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
-    if (item == NULL) {
-        printf("- sceIoGetstat('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
-        HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
-    }
-
-    // Check our data
-    if (item->flags & VPFS_ITEM_DELETED) {
-        printf("- sceIoGetstat('%s') [OVL]: Item was deleted\n", path);
-        HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
-    }
-    SceIoStat kstat = { 0 };
-    kstat.st_ctime = vfd->vpkg->pkg_time;
-    kstat.st_atime = vfd->vpkg->pkg_time;
-    kstat.st_mtime = vfd->vpkg->pkg_time;
-    if (item->flags & VPFS_ITEM_TYPE_DIR) {
-        kstat.st_mode = SCE_S_IFDIR | SCE_S_IRUSR | SCE_S_IROTH;
-    } else {
-        kstat.st_mode = SCE_S_IFREG | SCE_S_IRUSR | SCE_S_IROTH;
-        kstat.st_size = item->size;
-    }
-    ksceKernelMemcpyKernelToUser((uintptr_t)stat, &kstat, sizeof(kstat));
-    printf("- sceIoGetstat('%s') [OVL]: 0x%08X\n", path, 0);
-    HOOK_EXIT(0);
 }
 
 int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
@@ -1073,10 +1074,10 @@ SceUID ksceKernelCreateKernelUid_Hook(SceUID pid, SceUID uid)
 hook_t hooks[] = {
     { ksceIoOpen_Hook, 0x75192972, -1, 0, false },
     { ksceIoClose_Hook, 0xF99DD8A3, -1, 0, false },
+    { ksceIoGetstat_Hook, 0x75C96D25, -1, 0, false },
     { ksceIoDopen_Hook, 0x463B25CC, -1, 0, false },
     { ksceIoDread_Hook, 0x20CF5FC7, -1, 0, false },
     { ksceIoDclose_Hook, 0x19C81DD6, -1, 0, false },
-    { sceIoGetstat_Hook, 0x8E7E11F2, -1, 0, false },
     { sceIoRead_Hook, 0xFDB32293, -1, 0, false, },
     { sceIoLseek_Hook, 0xA604764A, -1, 0, false },
     { sceIoLseek32_Hook, 0x49252B9B, -1, 0, false },
