@@ -44,8 +44,7 @@ to `ux0:app/PCSE00001/` and let your browse the content of the PKG, even as it h
 
 ## TODO
 
-- Complete the user-land overrides (async calls and so on).
-- Kernel-land overrides.
+- Complete the overrides (async calls and so on).
 - Validate that VPFS content can be promoted if `work.bin` is present.
 - Validate that a promoted application can run as a VPFS.
 - File/directory deletion.

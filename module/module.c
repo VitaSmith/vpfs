@@ -167,6 +167,16 @@ int _ksceIoGetstat(const char *name, SceIoStat *stat)
     return (hooks[2].ref) ? TAI_CONTINUE(int, hooks[2].ref, name, stat) : ksceIoGetstat(name, stat);
 }
 
+int _ksceIoRead(SceUID fd, void *data, SceSize size)
+{
+    return (hooks[3].ref) ? TAI_CONTINUE(int, hooks[3].ref, fd, data, size) : ksceIoRead(fd, data, size);
+}
+
+SceOff _ksceIoLseek(SceUID fd, SceOff offset, int whence)
+{
+    return (hooks[4].ref) ? TAI_CONTINUE(int, hooks[4].ref, fd, offset, whence) : ksceIoLseek(fd, offset, whence);
+}
+
 // Log functions
 static char log_msg[256];
 static SceUID log_fd = 0;
@@ -357,7 +367,7 @@ static int vpkg_open(const char *path)
             }
 
             // Read the header to find the size of the data we need to cache
-            int read = ksceIoRead(fd, &header, sizeof(header));
+            int read = _ksceIoRead(fd, &header, sizeof(header));
             if (read != sizeof(header)) {
                 perr("Could not read VPFS header: 0x%08X\n", read);
                 _ksceIoClose(fd);
@@ -382,7 +392,7 @@ static int vpkg_open(const char *path)
             memcpy(data, &header, sizeof(header));
 
             // Now copy the rest of the data
-            read = ksceIoRead(fd, &data[sizeof(header)], header.size - sizeof(header));
+            read = _ksceIoRead(fd, &data[sizeof(header)], header.size - sizeof(header));
             _ksceIoClose(fd);
             if (read != (header.size - sizeof(header))) {
                 perr("Could not read VPFS data: 0x%08X\n", read);
@@ -620,7 +630,7 @@ SceUID ksceIoOpen_Hook(const char *filename, int flag, SceIoMode mode)
     if (vfd->item->pkg_index < 0)
         memcpy(&path[i], bck, sizeof(vpfs_ext));
     vfd->offset = 0;
-    ksceIoLseek(vfd->fd, vfd->item->offset, SCE_SEEK_SET);
+    _ksceIoLseek(vfd->fd, vfd->item->offset, SCE_SEEK_SET);
     printf("- ksceIoOpen('%s') [OVL]: 0x%08X\n", path, fd);
     HOOK_EXIT(fd);
 }
@@ -703,6 +713,132 @@ int ksceIoGetstat_Hook(const char* file, SceIoStat* stat)
     }
     printf("- ksceIoGetstat('%s') [OVL]: 0x%08X\n", path, 0);
     HOOK_EXIT(0);
+}
+
+int ksceIoRead_Hook(SceUID fd, void *data, SceSize size)
+{
+    HOOK_INIT();
+    uint8_t kdata[512];
+
+    int r = TAI_CONTINUE(int, hook_ref, fd, data, size);
+    if ((fd >> 16) != VPFD_MAGIC) {
+        HOOK_EXIT(r);
+    }
+
+    vfd_t* vfd = get_vfd(fd);
+    // Make sure we don't overflow our content
+    if (vfd->offset + size > vfd->item->size)
+        size = vfd->item->size - vfd->offset;
+    switch (vfd->item->flags) {
+    case VPFS_ITEM_TYPE_ZERO:
+        memset(data, 0, size);
+        vfd->offset += size;
+        r = size;
+        break;
+    case VPFS_ITEM_TYPE_BIN:
+        r = _ksceIoRead(vfd->fd, data, size);
+        if (r <= 0)
+            HOOK_EXIT(r);
+        vfd->offset += r;
+        break;
+    case VPFS_ITEM_TYPE_AES:
+        if (sceSblSsMgrAESCTRDecryptForDriver == NULL) {
+            perr("- ksceIoRead(0x%08X) [OVL]: sceSblSsMgrAESCTRDecryptForDriver() is not available\n", fd);
+            HOOK_EXIT(SCE_ERROR_ERRNO_EFAULT);
+        }
+
+        // TODO: Double buffering with async read into one buffer and CTR decrypt in the other
+        SceOff ctr_offset = vfd->offset & 0xFULL;
+        if (ctr_offset != 0) {
+            // Roll back to the start of our CTR segment
+            SceOff new_pos = _ksceIoLseek(vfd->fd, -ctr_offset, SCE_SEEK_CUR);
+            printf("- ksceIoRead(0x%08X)[OVL]: CTR rollback %lld bytes (pos = 0x%llX)\n", fd, ctr_offset, new_pos);
+            vfd->offset -= ctr_offset;
+        }
+
+        // Set the IV
+        vpfs_pkg_t* pkg = (vpfs_pkg_t*)&vfd->vpkg->data[sizeof(vpfs_header_t) + vfd->item->pkg_index * sizeof(vpfs_pkg_t)];
+        uint64_t block = (vfd->item->offset + vfd->offset - pkg->enc_offset) / 16;
+        uint8_t iv[16];
+        // The AES IV used by sceSblSsMgrAESCTRDecryptForDriver() must be inverted from its PKG representation.
+        // We take this opportunity to add the relevant data for XOR CTR.
+        for (int i = 0; i < 16; i++) {
+            block = block + pkg->iv[15 - i];
+            iv[i] = (uint8_t)block;
+            block >>= 8;
+        }
+
+        int data_size = size + ctr_offset;
+        uintptr_t data_offset = 0;
+        bool first_pass = true;
+        while (data_size > 0) {
+            int read = min(data_size, sizeof(kdata));
+            // All the PKG data is padded to 16 bytes so we can extend short reads
+            if (read < 16)
+                read = 16;
+            read = _ksceIoRead(vfd->fd, kdata, read);
+            if (read <= 0) {
+                HOOK_EXIT(read);
+            }
+            // Note: This call updates the iv for us
+            r = sceSblSsMgrAESCTRDecryptForDriver(kdata, kdata, read, pkg->key, 0x80, iv, 1);
+            if (r < 0) {
+                perr("- ksceIoRead(0x%08X) [OVL]: Could not decrypt AES CTR 0x%08X\n", fd, r);
+                HOOK_EXIT(r);
+            }
+            int copied = min(read - (first_pass ? ctr_offset : 0), data_size);
+            memcpy(data + data_offset, &kdata[first_pass ? ctr_offset : 0], copied);
+            // CTR offset only applies to the first read
+            vfd->offset += read;
+            data_offset += copied;
+            data_size -= copied;
+            first_pass = false;
+        }
+        r = size;
+        break;
+    default:
+        perr("- ksceIoRead(0x%08X) [OVL]: Item type %d is not supported\n", fd, vfd->item->flags);
+        HOOK_EXIT(SCE_ERROR_ERRNO_ENOSYS);
+    }
+    printf("- ksceIoRead(0x%08X) [OVL]: 0x%08X\n", fd, r);
+    HOOK_EXIT(r);
+}
+
+SceOff ksceIoLseek_Hook(SceUID fd, SceOff offset, int whence)
+{
+    HOOK_INIT();
+
+    SceOff r = TAI_CONTINUE(SceOff, hook_ref, fd, offset, whence);
+    vfd_t* vfd = get_vfd(fd);
+    if (vfd == NULL) {
+        HOOK_EXIT(r);
+    }
+    r = vfd->offset;
+    switch (whence) {
+    case SEEK_SET:
+        r = offset;
+        break;
+    case SEEK_END:
+        r = vfd->item->size + offset;
+        break;
+    case SEEK_CUR:
+        r += offset;
+        break;
+    default:
+        perr("- ksceIoLseek(0x%08X) [OVL]: invalid whence value %d\n", fd, whence);
+        HOOK_EXIT(SCE_ERROR_ERRNO_EINVAL);
+    }
+    if (r < 0) {
+        r = 0;
+    } else if (r > vfd->item->size) {
+        r = vfd->item->size;
+    }
+    vfd->offset = r;
+    // TODO: Check the return value of ksceIoLseek()
+    if (vfd->fd > 0)
+        _ksceIoLseek(vfd->fd, vfd->item->offset + vfd->offset, SCE_SEEK_SET);
+    printf("- ksceIoLseek(0x%08X) [OVL]: 0x%llX\n", fd, r);
+    HOOK_EXIT(r);
 }
 
 SceUID ksceIoDopen_Hook(const char *dirname)
@@ -837,158 +973,7 @@ int ksceIoDclose_Hook(SceUID fd)
     HOOK_EXIT(r);
 }
 
-int sceIoRead_Hook(SceUID fd, void *data, SceSize size)
-{
-    HOOK_INIT();
-    uint8_t kdata[512];
-
-    int r = TAI_CONTINUE(int, hook_ref, fd, data, size);
-    if ((fd >> 16) != VPFD_MAGIC) {
-        HOOK_EXIT(r);
-    }
-
-    vfd_t* vfd = get_vfd(fd);
-    // Make sure we don't overflow our content
-    if (vfd->offset + size > vfd->item->size)
-        size = vfd->item->size - vfd->offset;
-    int data_size;
-    uintptr_t data_offset;
-    switch (vfd->item->flags) {
-    case VPFS_ITEM_TYPE_ZERO:
-        memset(kdata, 0, sizeof(kdata));
-        data_size = size;
-        data_offset = 0;
-        while (data_size > 0) {
-            int read = min(data_size, sizeof(kdata));
-            ksceKernelMemcpyKernelToUser((uintptr_t)data + data_offset, &kdata, read);
-            data_size -= read;
-            data_offset += read;
-            vfd->offset += read;
-        }
-        r = size;
-        break;
-    case VPFS_ITEM_TYPE_BIN:
-        data_size = size;
-        data_offset = 0;
-        while (data_size > 0) {
-            int read = min(data_size, sizeof(kdata));
-            read = ksceIoRead(vfd->fd, kdata, read);
-            if (read <= 0) {
-                HOOK_EXIT(read);
-            }
-            data_size -= read;
-            ksceKernelMemcpyKernelToUser((uintptr_t)data + data_offset, &kdata, read);
-            data_offset += read;
-            vfd->offset += read;
-        }
-        r = size;
-        break;
-    case VPFS_ITEM_TYPE_AES:
-        if (sceSblSsMgrAESCTRDecryptForDriver == NULL) {
-            perr("- sceIoRead(0x%08X) [OVL]: sceSblSsMgrAESCTRDecryptForDriver() is not available\n", fd);
-            HOOK_EXIT(SCE_ERROR_ERRNO_EFAULT);
-        }
-
-        // TODO: Double buffering with async read into one buffer and CTR decrypt in the other
-        SceOff ctr_offset = vfd->offset & 0xFULL;
-        if (ctr_offset != 0) {
-            // Roll back to the start of our CTR segment
-            SceOff new_pos = ksceIoLseek(vfd->fd, -ctr_offset, SCE_SEEK_CUR);
-            printf("- sceIoRead(0x%08X)[OVL]: CTR rollback %lld bytes (pos = 0x%llX)\n", fd, ctr_offset, new_pos);
-            vfd->offset -= ctr_offset;
-        }
-
-        // Set the IV
-        vpfs_pkg_t* pkg = (vpfs_pkg_t*)&vfd->vpkg->data[sizeof(vpfs_header_t) + vfd->item->pkg_index * sizeof(vpfs_pkg_t)];
-        uint64_t block = (vfd->item->offset + vfd->offset - pkg->enc_offset) / 16;
-        uint8_t iv[16];
-        // The AES IV used by sceSblSsMgrAESCTRDecryptForDriver() must be inverted from its PKG representation.
-        // We take this opportunity to add the relevant data for XOR CTR.
-        for (int i = 0; i < 16; i++) {
-            block = block + pkg->iv[15 - i];
-            iv[i] = (uint8_t)block;
-            block >>= 8;
-        }
-
-        data_size = size + ctr_offset;
-        data_offset = 0;
-        bool first_pass = true;
-        // TODO: Double buffering with async read into one buffer and CTR decrypt in the other
-        while (data_size > 0) {
-            int read = min(data_size, sizeof(kdata));
-            // All the PKG data is padded to 16 bytes so we can extend short reads
-            if (read < 16)
-                read = 16;
-            read = ksceIoRead(vfd->fd, kdata, read);
-            if (read <= 0) {
-                HOOK_EXIT(read);
-            }
-            // Note: This call updates the iv for us
-            r = sceSblSsMgrAESCTRDecryptForDriver(kdata, kdata, read, pkg->key, 0x80, iv, 1);
-            if (r < 0) {
-                perr("- sceIoRead(0x%08X) [OVL]: Could not decrypt AES CTR 0x%08X\n", fd, r);
-                HOOK_EXIT(r);
-            }
-            int copied = min(read - (first_pass ? ctr_offset : 0), data_size);
-            ksceKernelMemcpyKernelToUser((uintptr_t)data + data_offset, &kdata[first_pass? ctr_offset : 0], copied);
-            // CTR offset only applies to the first read
-            vfd->offset += read;
-            data_offset += copied;
-            data_size -= copied;
-            first_pass = false;
-        }
-        r = size;
-        break;
-    default:
-        perr("- sceIoRead(0x%08X) [OVL]: Item type %d is not supported\n", fd, vfd->item->flags);
-        HOOK_EXIT(SCE_ERROR_ERRNO_ENOSYS);
-    }
-    printf("- sceIoRead(0x%08X) [OVL]: 0x%08X\n", fd, r);
-    HOOK_EXIT(r);
-}
-
-SceOff sceIoLseek_Hook(SceUID fd, sceIoLseekOpt* opt)
-{
-    HOOK_INIT();
-    sceIoLseekOpt kopt;
-
-    SceOff r = TAI_CONTINUE(SceOff, hook_ref, fd, opt);
-    vfd_t* vfd = get_vfd(fd);
-    if (vfd == NULL) {
-        HOOK_EXIT(r);
-    }
-    if (opt == NULL) {
-        HOOK_EXIT(SCE_ERROR_ERRNO_EINVAL);
-    }
-    // Copy the opt data to kernel space for processing
-    ksceKernelStrncpyUserToKernel(&kopt, (uintptr_t)opt, sizeof(kopt));
-    r = vfd->offset;
-    switch (kopt.whence) {
-    case SEEK_SET:
-        r = kopt.offset;
-        break;
-    case SEEK_END:
-        r = vfd->item->size + kopt.offset;
-        break;
-    case SEEK_CUR:
-        r += kopt.offset;
-        break;
-    default:
-        perr("- sceIoLseek(0x%08X) [OVL]: invalid whence value %d\n", fd, kopt.whence);
-        HOOK_EXIT(SCE_ERROR_ERRNO_EINVAL);
-    }
-    if (r < 0)
-        r = 0;
-    else if (r > vfd->item->size)
-        r = vfd->item->size;
-    vfd->offset = r;
-    // TODO: Check the return value of ksceIoLseek()
-    if (vfd->fd > 0)
-        ksceIoLseek(vfd->fd, vfd->item->offset + vfd->offset, SCE_SEEK_SET);
-    printf("- sceIoLseek(0x%08X) [OVL]: 0x%llX\n", fd, r);
-    HOOK_EXIT(r);
-}
-
+// There's no kernel equivalent for sceIoLseek32
 int sceIoLseek32_Hook(SceUID fd, int offset, int whence)
 {
     HOOK_INIT();
@@ -1020,7 +1005,7 @@ int sceIoLseek32_Hook(SceUID fd, int offset, int whence)
     vfd->offset = new_offset;
     // TODO: Check the return value of ksceIoLseek()
     if (vfd->fd > 0)
-        ksceIoLseek(vfd->fd, vfd->item->offset + vfd->offset, SCE_SEEK_SET);
+        _ksceIoLseek(vfd->fd, vfd->item->offset + vfd->offset, SCE_SEEK_SET);
     r = (int)new_offset;
     printf("- sceIoLseek32(0x%08X, 0x%08X, %d) [OVL]: 0x%08X\n", fd, offset, whence, r);
     HOOK_EXIT(r);
@@ -1075,11 +1060,11 @@ hook_t hooks[] = {
     { ksceIoOpen_Hook, 0x75192972, -1, 0, false },
     { ksceIoClose_Hook, 0xF99DD8A3, -1, 0, false },
     { ksceIoGetstat_Hook, 0x75C96D25, -1, 0, false },
+    { ksceIoRead_Hook, 0xE17EFC03, -1, 0, false, },
+    { ksceIoLseek_Hook, 0x62090481, -1, 0, false },
     { ksceIoDopen_Hook, 0x463B25CC, -1, 0, false },
     { ksceIoDread_Hook, 0x20CF5FC7, -1, 0, false },
     { ksceIoDclose_Hook, 0x19C81DD6, -1, 0, false },
-    { sceIoRead_Hook, 0xFDB32293, -1, 0, false, },
-    { sceIoLseek_Hook, 0xA604764A, -1, 0, false },
     { sceIoLseek32_Hook, 0x49252B9B, -1, 0, false },
     { ksceKernelCreateUserUid_Hook, 0xBF209859, -1, 0, true },
     { ksceKernelCreateKernelUid_Hook, 0x45D22597, -1, 0, true },
@@ -1087,13 +1072,9 @@ hook_t hooks[] = {
 
 // https://docs.vitasdk.org/group__SceFcntlUser.html
 // 
-// Calls we still need:
-// - All the kernel/driver counterparts to the above
 // Calls we might still need:
 // - int sceIoGetDevType(SceUID fd) [?]
 // - int sceIoPread(SceUID fd, void *data, SceSize size, SceOff offset) [?]
-// - int sceIoWrite(SceUID fd, const void *data, SceSize size) [Should return RO error]
-// - int sceIoPwrite(SceUID fd, const void *data, SceSize size, SceOff offset) [Should return RO error]
 // - int sceIoRemove(const char *file)
 // - int sceIoRename(const char *oldname, const char *newname) [Should return RO error]
 // - int sceIoSyncByFd(SceUID fd) [?]
