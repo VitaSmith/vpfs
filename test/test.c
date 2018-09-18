@@ -29,6 +29,8 @@
 #include <psp2/io/fcntl.h>
 #include <psp2/io/dirent.h>
 #include <psp2/io/stat.h>
+#include <psp2/sysmodule.h>
+#include <psp2/promoterutil.h>
 
 #include "console.h"
 
@@ -431,12 +433,13 @@ static bool test_zero_file(SceUID fd, int size)
 {
     uint8_t* data = malloc(size);
     if (data == NULL) {
-        perr("Could not open alloc data for test:\n");
+        perr("Could not alloc data for test:\n");
         return false;
     }
     int read = sceIoRead(fd, data, size);
     if (read != size) {
         perr("Could not read data from file: 0x%08X\n", read);
+        free(data);
         return false;
     }
     sceIoClose(fd);
@@ -444,9 +447,11 @@ static bool test_zero_file(SceUID fd, int size)
         if (data[i] != 0) {
             perr("Data from differs at offset 0x%08X:\n", i);
             dump_hex(&data[i], 16);
+            free(data);
             return false;
         }
     }
+    free(data);
     return true;
 }
 
@@ -454,12 +459,13 @@ static bool test_read_file(SceUID fd, uint8_t* expected_data, int size)
 {
     uint8_t* data = malloc(size);
     if (data == NULL) {
-        perr("Could not open alloc data for test:\n");
+        perr("Could not alloc data for test:\n");
         return false;
     }
     int read = sceIoRead(fd, data, size);
     if (read != size) {
         perr("Could not read data from file: 0x%08X\n", read);
+        free(data);
         return false;
     }
     for (int i = 0; i < size; i++) {
@@ -467,9 +473,37 @@ static bool test_read_file(SceUID fd, uint8_t* expected_data, int size)
             perr("Data from file differs at offset 0x%08X:\n", i);
             dump_hex(&data[i], 16);
             dump_hex(&expected_data[i], 16);
+            free(data);
             return false;
         }
     }
+    free(data);
+    return true;
+}
+
+static bool test_pread_file(SceUID fd, uint8_t* expected_data, int size, SceOff offset)
+{
+    uint8_t* data = malloc(size);
+    if (data == NULL) {
+        perr("Could not alloc data for test:\n");
+        return false;
+    }
+    int read = sceIoPread(fd, data, size, offset);
+    if (read != size) {
+        perr("Could not read data from file: 0x%08X\n", read);
+        free(data);
+        return false;
+    }
+    for (int i = 0; i < size; i++) {
+        if (data[i] != expected_data[i]) {
+            perr("Data from file differs at offset 0x%08X:\n", i);
+            dump_hex(&data[i], 16);
+            dump_hex(&expected_data[i], 16);
+            free(data);
+            return false;
+        }
+    }
+    free(data);
     return true;
 }
 
@@ -493,6 +527,16 @@ static bool test_lseek32_file(SceUID fd, int offset, int whence, int expected)
     return true;
 }
 
+static bool test_rename(const char* oldname, const char* newname)
+{
+    int r = sceIoRename(oldname, newname);
+    if (r < 0) {
+        perr("Could not rename '%s' to '%s': 0x%08X\n", oldname, newname, r);
+        return false;
+    }
+    return true;
+}
+
 static void wait_for_key(const char* message)
 {
     SceCtrlData pad;
@@ -503,6 +547,9 @@ static void wait_for_key(const char* message)
     do {
         sceCtrlPeekBufferPositive(0, &pad, 1);
     } while (!(pad.buttons & SCE_CTRL_CROSS));
+    do {
+        sceCtrlPeekBufferPositive(0, &pad, 1);
+    } while (pad.buttons & SCE_CTRL_CROSS);
     console_reset();
 }
 
@@ -516,8 +563,9 @@ static void wait_for_key(const char* message)
 
 int main()
 {
+    SceUID fd = -1;
     int r = -1;
-    const bool group[2] = { true, true };
+    const bool group[3] = { true, true, true };
 
     init_video();
     console_init();
@@ -548,7 +596,6 @@ int main()
         wait_for_key("Press X to continue...");
     }
     if (group[1]) {
-        SceUID fd = -1;
         DISPLAY_TEST("Open 'eboot.bin'", test_open_file, "ux0:app/PCSE00001/eboot.bin", &fd);
         DISPLAY_TEST("Close 'eboot.bin'", test_close_file, fd);
         DISPLAY_TEST("Open 'sce_sys/package/work.bin'", test_open_file, "ux0:app/PCSE00001/sce_sys/package/work.bin", &fd);
@@ -572,11 +619,18 @@ int main()
         // TODO: This currently fails if we have CTR rollback
         DISPLAY_TEST("Read after Lseek32", test_read_file, fd, &param_sfo[sizeof(param_sfo) - offset_32bit], offset_32bit);
         test_close_file(fd);
-        const SceOff offset_64bit = 0x1CB;
+        SceOff offset_64bit = 0x1CB;
         test_open_file("ux0:app/PCSE00001/sce_sys/param.sfo", &fd);
         DISPLAY_TEST("Lseek 'sce_sys/param.sfo'", test_lseek_file, fd, offset_64bit, SEEK_SET, offset_64bit);
         DISPLAY_TEST("Read after Lseek", test_read_file, fd, &param_sfo[offset_64bit], sizeof(param_sfo) - offset_64bit);
+        offset_64bit = 0x73;
+        DISPLAY_TEST("Pread 'sce_sys/param.sfo'", test_pread_file, fd, &param_sfo[offset_64bit], sizeof(param_sfo) - offset_64bit, offset_64bit);
         test_close_file(fd);
+        wait_for_key("Press X to continue...");
+    }
+    if (group[2]) {
+        DISPLAY_TEST("Rename 'ux0:app/PCSE00001' to 'ux0:temp/app'", test_rename, "ux0:app/PCSE00001", "ux0:temp/app");
+        DISPLAY_TEST("Rename 'ux0:temp/app' to 'ux0:app/PCSE00001'", test_rename, "ux0:temp/app", "ux0:app/PCSE00001");
     }
     DISPLAY_TEST("VPFS module can be unloaded", module_unload);
 
