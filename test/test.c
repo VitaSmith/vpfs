@@ -34,10 +34,10 @@
 
 #include "console.h"
 
-#define VERSION             "0.6"
+#define VERSION             "0.7"
 #define VPFS_SKPRX          "ux0:tai/vpfs.skprx"
 #define ARRAYSIZE(A)        (sizeof(A)/sizeof((A)[0]))
-#define perr(...)           do { console_set_color(RED); printf(__VA_ARGS__); console_set_color(WHITE); } while(0);
+#define perr(format, ...)   do { console_set_color(RED); printf("Error: " format, ## __VA_ARGS__); console_set_color(WHITE); } while(0);
 
 SceUID module_id = -1;
 
@@ -537,6 +537,60 @@ static bool test_rename(const char* oldname, const char* newname)
     return true;
 }
 
+static bool test_promote(const char *path)
+{
+    bool ret = false;
+    int r;
+    uint32_t argp[6] = { 0x180000, -1, -1, 1, -1, -1 }, buf[4] = { sizeof(buf), (uint32_t)&r, -1, -1 };
+
+    r = sceSysmoduleLoadModuleInternalWithArg(SCE_SYSMODULE_INTERNAL_PAF, sizeof(argp), argp, buf);
+    if (r < 0) {
+        perr("Loading of PAF failed: 0x%08X\n", r);
+        goto out3;
+    }
+    buf[0] = 0;
+
+    r = sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
+    if (r < 0) {
+        perr("Loading of Promoter Utility failed: 0x%08X\n", r);
+        goto out2;
+    }
+
+    r = scePromoterUtilityInit();
+    if (r < 0) {
+        perr("Init of Promoter Utility failed: 0x%08X\n", r);
+        goto out1;
+    }
+
+    // TODO: try to change 1 to 0
+    r = scePromoterUtilityPromotePkgWithRif(path, 0);
+    if (r < 0) {
+        perr("Package promotion failed: 0x%08X\n", r);
+    }
+    ret = (r >= 0);
+
+    r = scePromoterUtilityExit();
+    if (r < 0) {
+        perr("Exit of Promoter Utility failed: 0x%08X\n", r);
+        ret = false;
+    }
+
+out1:
+    r = sceSysmoduleUnloadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
+    if (r < 0) {
+        perr("Unload of Promoter Utility failed: 0x%08X\n", r);
+        ret = false;
+    }
+out2:
+    r = sceSysmoduleUnloadModuleInternalWithArg(SCE_SYSMODULE_INTERNAL_PAF, 0, NULL, buf);
+    if (r < 0) {
+        perr("Unload of PAF failed: 0x%08X\n", r);
+        ret = false;
+    }
+out3:
+    return ret;
+}
+
 static void wait_for_key(const char* message)
 {
     SceCtrlData pad;
@@ -565,7 +619,7 @@ int main()
 {
     SceUID fd = -1;
     int r = -1;
-    const bool group[3] = { true, true, true };
+    const bool group[3] = { true, true, false };
 
     init_video();
     console_init();
@@ -630,6 +684,7 @@ int main()
     }
     if (group[2]) {
         DISPLAY_TEST("Rename 'ux0:app/PCSE00001' to 'ux0:temp/app'", test_rename, "ux0:app/PCSE00001", "ux0:temp/app");
+        DISPLAY_TEST("Promote 'ux0:temp/app'", test_promote, "ux0:temp/app");
         DISPLAY_TEST("Rename 'ux0:temp/app' to 'ux0:app/PCSE00001'", test_rename, "ux0:temp/app", "ux0:app/PCSE00001");
     }
     DISPLAY_TEST("VPFS module can be unloaded", module_unload);

@@ -37,7 +37,17 @@
 #include <taihen.h>
 #include <vitasdkkern.h>
 
-//#define                                         LOG_WRITES
+//#define                                         LOG_ORG
+#define                                         LOG_OVL
+#define                                         LOG_OPEN_CLOSE
+#define                                         LOG_DOPEN_DCLOSE
+//#define                                         LOG_DREAD
+#define                                         LOG_GETSTAT
+//#define                                         LOG_READ
+//#define                                         LOG_WRITE
+//#define                                         LOG_SEEK
+#define                                         LOG_RENAME_REMOVE
+//#define                                         LOG_UID
 
 #define LOG_PATH                                "ux0:data/vpfs.log"
 #define ROUNDUP(n, width)                       (((n) + (width) - 1) & (~(unsigned int)((width) - 1)))
@@ -185,7 +195,7 @@ int _ksceIoRename(const char *oldname, const char *newname)
     return (hooks[5].ref) ? TAI_CONTINUE(int, hooks[5].ref, oldname, newname) : ksceIoRename(oldname, newname);
 }
 
-#if defined(LOG_WRITES)
+#if defined(LOG_WRITE)
 int _ksceIoWrite(SceUID fd, const void *data, SceSize size)
 {
     return (hooks[6].ref) ? TAI_CONTINUE(int, hooks[6].ref, fd, data, size) : ksceIoWrite(fd, data, size);
@@ -199,7 +209,7 @@ static void log_print(const char* msg)
 {
     log_fd = _ksceIoOpen(LOG_PATH, SCE_O_CREAT | SCE_O_APPEND | SCE_O_WRONLY, 0777);
     if (log_fd >= 0) {
-#if defined(LOG_WRITES)
+#if defined(LOG_WRITE)
         _ksceIoWrite(log_fd, msg, strlen(msg));
 #else
         ksceIoWrite(log_fd, msg, strlen(msg));
@@ -610,13 +620,17 @@ SceUID ksceIoOpen_Hook(const char *filename, int flag, SceIoMode mode)
     size_t i = vpfs_lookup(path, &fd);
     if (i == 0) {
         // Couldn't find a relevant VPFS => use the original function call
+#if defined(LOG_ORG) && defined(LOG_OPEN_CLOSE)
         printf("- ksceIoOpen('%s') [ORG]: 0x%08X\n", filename, tai_fd);
+#endif
         HOOK_EXIT(tai_fd);
     }
 
     // Filter out flags that are incompatible with the read-only nature of VPFS
     if (flag & (SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND | SCE_O_TRUNC | SCE_O_DIROPEN)) {
+#if defined(LOG_OVL) && defined(LOG_OPEN_CLOSE)
         printf("-ksceIoOpen('%s') [OVL]: 0x%08X flags are incompatible with read-only VPFS\n", path, flag);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_EROFS);
     }
 
@@ -628,18 +642,24 @@ SceUID ksceIoOpen_Hook(const char *filename, int flag, SceIoMode mode)
 
     vfd->item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
     if (vfd->item == NULL) {
+#if defined(LOG_OVL) && defined(LOG_OPEN_CLOSE)
         printf("- ksceIoOpen('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
 
     // Check our data
     if (vfd->item->flags & VPFS_ITEM_DELETED) {
+#if defined(LOG_OVL) && defined(LOG_OPEN_CLOSE)
         printf("- ksceIoOpen('%s') [OVL]: Item was deleted\n", path);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
 
     if (vfd->item->flags & VPFS_ITEM_TYPE_DIR) {
+#if defined(LOG_OVL) && defined(LOG_OPEN_CLOSE)
         printf("- ksceIoOpen('%s') [OVL]: This is a directory\n", path);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
 
@@ -655,12 +675,16 @@ SceUID ksceIoOpen_Hook(const char *filename, int flag, SceIoMode mode)
     }
     vfd->fd = _ksceIoOpen(item_path, SCE_O_RDONLY, 0);
     if (vfd->fd < 0) {
+#if defined(LOG_OVL) && defined(LOG_OPEN_CLOSE)
         perr("- ksceIoOpen('%s) [OVL]: Could not open '%s': 0x%08X\n", filename, item_path, vfd->fd);
+#endif
         HOOK_EXIT(vfd->fd);
     }
     vfd->offset = 0;
     _ksceIoLseek(vfd->fd, vfd->item->offset, SCE_SEEK_SET);
+#if defined(LOG_OVL) && defined(LOG_OPEN_CLOSE)
     printf("- ksceIoOpen('%s') [OVL]: 0x%08X\n", filename, fd);
+#endif
     HOOK_EXIT(fd);
 }
 
@@ -674,9 +698,13 @@ int ksceIoClose_Hook(SceUID fd)
         if ((vfd != NULL) && (vfd->fd > 0))
             _ksceIoClose(vfd->fd);
         vfd->fd = 0;
+#if defined(LOG_ORG) && defined(LOG_OPEN_CLOSE)
         printf("- ksceIoClose(0x%08X) [OVL]: 0x%08X\n", fd, r);
+#endif
     } else
+#if defined(LOG_OVL) && defined(LOG_OPEN_CLOSE)
         printf("- ksceIoClose(0x%08X) [ORG]: 0x%08X\n", fd, r);
+#endif
     HOOK_EXIT(r);
 }
 
@@ -693,7 +721,9 @@ int ksceIoGetstat_Hook(const char* file, SceIoStat* stat)
     size_t i = vpfs_lookup(path, &fd);
     if (i == 0) {
         // Couldn't find a relevant VPFS => use the original function call
-//        printf("- ksceIoGetstat('%s') [ORG]: 0x%08X\n", path, r);
+#if defined(LOG_ORG) && defined(LOG_GETSTAT)
+        printf("- ksceIoGetstat('%s') [ORG]: 0x%08X\n", path, r);
+#endif
         HOOK_EXIT(r);
     }
 
@@ -707,13 +737,17 @@ int ksceIoGetstat_Hook(const char* file, SceIoStat* stat)
     }
     vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, &path[i]);
     if (item == NULL) {
+#if defined(LOG_OVL) && defined(LOG_GETSTAT)
         printf("- ksceIoGetstat('%s') [OVL]: '%s' Entry not found in .vpfs\n", file, &path[i]);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
 
     // Check our data
     if (item->flags & VPFS_ITEM_DELETED) {
+#if defined(LOG_OVL) && defined(LOG_GETSTAT)
         printf("- ksceIoGetstat('%s') [OVL]: '%s' item was deleted\n", file, path);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
     memset(stat, 0, sizeof(SceIoStat));
@@ -726,7 +760,9 @@ int ksceIoGetstat_Hook(const char* file, SceIoStat* stat)
         stat->st_mode = SCE_S_IFREG | SCE_S_IRUSR | SCE_S_IROTH;
         stat->st_size = item->size;
     }
+#if defined(LOG_OVL) && defined(LOG_GETSTAT)
     printf("- ksceIoGetstat('%s') [OVL]: 0x%08X\n", path, 0);
+#endif
     HOOK_EXIT(0);
 }
 
@@ -753,7 +789,9 @@ static int read_common(const char* name, SceUID fd, void *data, SceSize size)
         break;
     case VPFS_ITEM_TYPE_AES:
         if (sceSblSsMgrAESCTRDecryptForDriver == NULL) {
+#if defined(LOG_OVL) && defined(LOG_READ)
             perr("- %s(0x%08X) [OVL]: sceSblSsMgrAESCTRDecryptForDriver() is not available\n", name, fd);
+#endif
             return SCE_ERROR_ERRNO_EFAULT;
         }
 
@@ -762,7 +800,9 @@ static int read_common(const char* name, SceUID fd, void *data, SceSize size)
         if (ctr_offset != 0) {
             // Roll back to the start of our CTR segment
             SceOff new_pos = _ksceIoLseek(vfd->fd, -ctr_offset, SCE_SEEK_CUR);
+#if defined(LOG_OVL) && defined(LOG_READ)
             printf("- %s(0x%08X)[OVL]: CTR rollback %lld bytes (pos = 0x%llX)\n", name, fd, ctr_offset, new_pos);
+#endif
             vfd->offset -= ctr_offset;
         }
 
@@ -793,7 +833,9 @@ static int read_common(const char* name, SceUID fd, void *data, SceSize size)
             // Note: This call updates the iv for us
             r = sceSblSsMgrAESCTRDecryptForDriver(kdata, kdata, read, pkg->key, 0x80, iv, 1);
             if (r < 0) {
+#if defined(LOG_OVL) && defined(LOG_READ)
                 perr("- %s(0x%08X) [OVL]: Could not decrypt AES CTR 0x%08X\n", name, fd, r);
+#endif
                 return r;
             }
             int copied = min(read - (first_pass ? ctr_offset : 0), data_size);
@@ -807,10 +849,11 @@ static int read_common(const char* name, SceUID fd, void *data, SceSize size)
         r = size;
         break;
     default:
+#if defined(LOG_OVL) && defined(LOG_READ)
         perr("- %s(0x%08X) [OVL]: Item type %d is not supported\n", name, fd, vfd->item->flags);
+#endif
         return SCE_ERROR_ERRNO_ENOSYS;
     }
-    printf("- %s(0x%08X) [OVL]: 0x%08X\n", name, fd, r);
     return r;
 }
 
@@ -821,8 +864,13 @@ int ksceIoRead_Hook(SceUID fd, void *data, SceSize size)
     int r = TAI_CONTINUE(int, hook_ref, fd, data, size);
     if ((fd >> 16) == VPFD_MAGIC) {
         r = read_common("ksceIoRead", fd, data, size);
+#if defined(LOG_OVL) && defined(LOG_READ)
+        printf("- ksceIoRead(0x%08X) [OVL]: 0x%08X\n", fd, r);
+#endif
     } else {
+#if defined(LOG_ORG) && defined(LOG_READ)
         printf("- ksceIoRead(0x%08X) [ORG]: 0x%08X\n", fd, r);
+#endif
     }
 
     HOOK_EXIT(r);
@@ -835,7 +883,9 @@ SceOff ksceIoLseek_Hook(SceUID fd, SceOff offset, int whence)
     SceOff r = TAI_CONTINUE(SceOff, hook_ref, fd, offset, whence);
     vfd_t* vfd = get_vfd(fd);
     if (vfd == NULL) {
-//        printf("- ksceIoLseek(0x%08X) [ORG]: 0x%llX\n", fd, r);
+#if defined(LOG_ORG) && defined(LOG_SEEK)
+        printf("- ksceIoLseek(0x%08X) [ORG]: 0x%llX\n", fd, r);
+#endif
         HOOK_EXIT(r);
     }
     r = vfd->offset;
@@ -850,7 +900,9 @@ SceOff ksceIoLseek_Hook(SceUID fd, SceOff offset, int whence)
         r += offset;
         break;
     default:
+#if defined(LOG_OVL) && defined(LOG_SEEK)
         perr("- ksceIoLseek(0x%08X) [OVL]: invalid whence value %d\n", fd, whence);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_EINVAL);
     }
     if (r < 0) {
@@ -862,10 +914,13 @@ SceOff ksceIoLseek_Hook(SceUID fd, SceOff offset, int whence)
     // TODO: Check the return value of ksceIoLseek()
     if (vfd->fd > 0)
         _ksceIoLseek(vfd->fd, vfd->item->offset + vfd->offset, SCE_SEEK_SET);
+#if defined(LOG_OVL) && defined(LOG_SEEK)
     printf("- ksceIoLseek(0x%08X) [OVL]: 0x%llX\n", fd, r);
+#endif
     HOOK_EXIT(r);
 }
 
+// TODO: Should return ro-error when renaming anything but virtual root dir
 int ksceIoRename_Hook(const char *oldname, const char *newname)
 {
     char path[MAX_PATH + sizeof(vpfs_ext)];
@@ -882,7 +937,7 @@ int ksceIoRename_Hook(const char *oldname, const char *newname)
     SceUID fd = vpfs_open(path);
     if (fd < 0) {
         // Couldn't find a relevant VPFS => use the original function call
-//        printf("- ksceIoRename('%s', '%s') [ORG]: 0x%08X\n", oldname, newname, r);
+        printf("- ksceIoRename('%s', '%s') [ORG]: 0x%08X\n", oldname, newname, r);
         HOOK_EXIT(r);
     }
     // We are dealing with a rename of the virtua directory, which is fine
@@ -908,12 +963,14 @@ int ksceIoRename_Hook(const char *oldname, const char *newname)
     HOOK_EXIT(r);
 }
 
-#if defined(LOG_WRITES)
+#if defined(LOG_WRITE)
 int ksceIoWrite_Hook(SceUID fd, const void *data, SceSize size)
 {
     HOOK_INIT();
     int r = TAI_CONTINUE(int, hook_ref, fd, data, size);
+#if defined(LOG_ORG)
     printf("- ksceIoWrite(0x%08X) [ORG]: 0x%08X\n", fd, r);
+#endif
     HOOK_EXIT(r);
 }
 #endif
@@ -932,7 +989,9 @@ SceUID ksceIoDopen_Hook(const char *dirname)
     size_t i = vpfs_lookup(path, &fd);
     if (i == 0) {
         // Couldn't find a relevant VPFS => use the original function call
-//        printf("- ksceIoDopen('%s') [ORG]: 0x%08X\n", path, tai_fd);
+#if defined(LOG_ORG) && defined(LOG_DOPEN_DCLOSE)
+        printf("- ksceIoDopen('%s') [ORG]: 0x%08X\n", path, tai_fd);
+#endif
         HOOK_EXIT(tai_fd);
     }
 
@@ -944,25 +1003,35 @@ SceUID ksceIoDopen_Hook(const char *dirname)
 
     vfd->item = vpfs_find_item(vfd->vpkg->data, &path[i + 1]);
     if (vfd->item == NULL) {
+#if defined(LOG_OVL) && defined(LOG_DOPEN_DCLOSE)
         printf("- ksceIoDopen('%s') [OVL]: Entry not found in .vpfs\n", &path[i + 1]);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
 
     // Check our data
     if (!(vfd->item->flags & VPFS_ITEM_TYPE_DIR)) {
+#if defined(LOG_OVL) && defined(LOG_DOPEN_DCLOSE)
         printf("- ksceIoDopen('%s') [OVL]: Item found is not a directory\n", path);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOTDIR);
     }
     if (vfd->item->flags & VPFS_ITEM_DELETED) {
+#if defined(LOG_OVL) && defined(LOG_DOPEN_DCLOSE)
         printf("- ksceIoDopen('%s') [OVL]: Item was deleted\n", path);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
     if (vfd->item->pkg_index > 0) {
+#if defined(LOG_OVL) && defined(LOG_DOPEN_DCLOSE)
         printf("- ksceIoDopen('%s') [OVL]: Directory offset is not in VPFS file\n", path);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_EFAULT);
     }
     vfd->offset = vfd->item->offset;
-//    printf("- ksceIoDopen('%s') [OVL]: 0x%08X\n", path, fd);
+#if defined(LOG_OVL) && defined(LOG_DOPEN_DCLOSE)
+    printf("- ksceIoDopen('%s') [OVL]: 0x%08X\n", path, fd);
+#endif
     HOOK_EXIT(fd);
 }
 
@@ -989,7 +1058,9 @@ int ksceIoDread_Hook(SceUID fd, SceIoDirent *dir)
                 }
             }
         }
-//        printf("- ksceIoDread(0x%08X) [ORG]: 0x%08X\n", fd, r);
+#if defined(LOG_ORG) && defined(LOG_DREAD)
+        printf("- ksceIoDread(0x%08X) [ORG]: 0x%08X\n", fd, r);
+#endif
         HOOK_EXIT(r);
     }
 
@@ -1004,7 +1075,9 @@ int ksceIoDread_Hook(SceUID fd, SceIoDirent *dir)
     memset(&dir->d_stat, 0, sizeof(dir->d_stat));
     vpfs_item_t* item = vpfs_find_item(vfd->vpkg->data, path);
     if (item == NULL) {
+#if defined(LOG_OVL) && defined(LOG_DREAD)
         printf("- ksceIoDread('%s') [OVL]: Entry not found in .vpfs\n", path);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_ENOENT);
     }
     // TODO: Check for VPFS_ITEM_DELETED and skip deleted items
@@ -1020,7 +1093,9 @@ int ksceIoDread_Hook(SceUID fd, SceIoDirent *dir)
         dir->d_stat.st_size = item->size;
     }
     vfd->offset += len + 1;
-//    printf("- ksceIoDread(0x%08X) [OVL]: '%s'\n", fd, name);
+#if defined(LOG_OVL) && defined(LOG_DREAD)
+    printf("- ksceIoDread(0x%08X) [OVL]: '%s'\n", fd, name);
+#endif
     HOOK_EXIT(1);
 }
 
@@ -1031,7 +1106,13 @@ int ksceIoDclose_Hook(SceUID fd)
     int r = TAI_CONTINUE(int, hook_ref, fd);
     if ((fd >> 16) == VPFD_MAGIC) {
         r = vpfs_close(fd);
-//        printf("- ksceIoDclose(0x%08X) [OVL]: 0x%08X\n", fd, r);
+#if defined(LOG_OVL) && defined(LOG_DOPEN_DCLOSE)
+        printf("- ksceIoDclose(0x%08X) [OVL]: 0x%08X\n", fd, r);
+#endif
+    } else {
+#if defined(LOG_ORG) && defined(LOG_DOPEN_DCLOSE)
+        printf("- ksceIoDclose(0x%08X) [ORG]: 0x%08X\n", fd, r);
+#endif
     }
     HOOK_EXIT(r);
 }
@@ -1044,7 +1125,9 @@ int sceIoLseek32_Hook(SceUID fd, int offset, int whence)
     int r = TAI_CONTINUE(int, hook_ref, fd, offset, whence);
     vfd_t* vfd = get_vfd(fd);
     if (vfd == NULL) {
-//        printf("- sceIoLseek32(0x%08X, 0x%08X, %d) [ORG]: 0x%08X\n", fd, offset, whence, r);
+#if defined(LOG_ORG) && defined(LOG_SEEK)
+        printf("- sceIoLseek32(0x%08X, 0x%08X, %d) [ORG]: 0x%08X\n", fd, offset, whence, r);
+#endif
         HOOK_EXIT(r);
     }
     int64_t new_offset = vfd->offset;
@@ -1059,7 +1142,9 @@ int sceIoLseek32_Hook(SceUID fd, int offset, int whence)
         new_offset += offset;
         break;
     default:
-        perr("- sceIoLseek32(0x%08X) [OVL]: invalid whence value %d\n", fd, whence);
+#if defined(LOG_OVL) && defined(LOG_SEEK)
+        perr("- sceIoLseek32ceIoLseek32(0x%08X, 0x%08X, %d) [OVL]: invalid whence value\n", fd, offset, whence);
+#endif
         HOOK_EXIT(SCE_ERROR_ERRNO_EINVAL);
     }
     if (new_offset < 0)
@@ -1071,7 +1156,9 @@ int sceIoLseek32_Hook(SceUID fd, int offset, int whence)
     if (vfd->fd > 0)
         _ksceIoLseek(vfd->fd, vfd->item->offset + vfd->offset, SCE_SEEK_SET);
     r = (int)new_offset;
+#if defined(LOG_OVL) && defined(LOG_SEEK)
     printf("- sceIoLseek32(0x%08X, 0x%08X, %d) [OVL]: 0x%08X\n", fd, offset, whence, r);
+#endif
 
     HOOK_EXIT(r);
 }
@@ -1083,7 +1170,9 @@ int ksceIoPread_Hook(SceUID fd, void *data, int size, SceOff offset)
     int r = TAI_CONTINUE(int, hook_ref, fd, data, size, offset);
     vfd_t* vfd = get_vfd(fd);
     if (vfd == NULL) {
-//        printf("- ksceIoPread(0x%08X, 0x%llx) [ORG]: 0x%08X\n", fd, offset, r);
+#if defined(LOG_ORG) && defined(LOG_READ)
+        printf("- ksceIoPread(0x%08X, 0x%llx) [ORG]: 0x%08X\n", fd, offset, r);
+#endif
         HOOK_EXIT(r);
     }
     if (offset < 0)
@@ -1094,7 +1183,71 @@ int ksceIoPread_Hook(SceUID fd, void *data, int size, SceOff offset)
     if (vfd->fd > 0)
         _ksceIoLseek(vfd->fd, vfd->item->offset + vfd->offset, SCE_SEEK_SET);
 
-    HOOK_EXIT(read_common("ksceIoPread", fd, data, size));
+    r = read_common("ksceIoPread", fd, data, size);
+#if defined(LOG_OVL) && defined(LOG_READ)
+    printf("- ksceIoPread(0x%08X, 0x%llx) [OVL]: 0x%08X\n", fd, offset, r);
+#endif
+    HOOK_EXIT(r);
+}
+
+SceUID ksceIoOpenAsync_Hook(const char *filename, int flags, SceMode mode)
+{
+    HOOK_INIT();
+
+    SceUID fd = TAI_CONTINUE(SceUID, hook_ref, filename, flags, mode);
+#if defined(LOG_ORG) && defined(LOG_OPEN_CLOSE)
+    printf("- ksceIoOpenAsync('%s') [ORG]: 0x%08X\n", filename, fd);
+#endif
+
+    HOOK_EXIT(fd);
+}
+
+int ksceIoGetstat2_Hook(const char* filename, SceIoStat* stat)
+{
+    HOOK_INIT();
+
+    SceUID fd = TAI_CONTINUE(int, hook_ref, filename, stat);
+#if defined(LOG_ORG) && defined(LOG_GETSTAT)
+    printf("- ksceIoGetstat2('%s') [ORG]: 0x%08X\n", filename, fd);
+#endif
+
+    HOOK_EXIT(fd);
+}
+
+int ksceIoRemove_Hook(const char *filename)
+{
+    HOOK_INIT();
+
+    int r = TAI_CONTINUE(int, hook_ref, filename);
+#if defined(LOG_ORG) && defined(LOG_RENAME_REMOVE)
+    printf("- ksceIoRemove('%s') [ORG]: 0x%08X\n", filename, r);
+#endif
+
+    HOOK_EXIT(r);
+}
+
+int ksceIoMkdir_Hook(const char *dirname, SceIoMode mode)
+{
+    HOOK_INIT();
+
+    int r = TAI_CONTINUE(int, hook_ref, dirname);
+#if defined(LOG_ORG) && defined(LOG_RENAME_REMOVE)
+    printf("- ksceIoMkdir('%s') [ORG]: 0x%08X\n", dirname, r);
+#endif
+
+    HOOK_EXIT(r);
+}
+
+int ksceIoGetstatByFd_Hook(SceUID fd, SceIoStat *buf)
+{
+    HOOK_INIT();
+
+    int r = TAI_CONTINUE(int, hook_ref, fd, buf);
+#if defined(LOG_ORG) && defined(LOG_GETSTAT)
+    printf("- ksceIoGetstatByFd(0x%08X) [OVL]: 0x%08X\n", fd, r);
+#endif
+
+    HOOK_EXIT(r);
 }
 
 // We override the ksceKernelCreateUserUid & ksceCreateKernelUid *imports*
@@ -1106,7 +1259,9 @@ SceUID ksceKernelCreateUserUid_Hook(SceUID pid, SceUID uid)
     SceUID r = TAI_CONTINUE(SceUID, hook_ref, pid, uid);
     if ((uid >> 16) == VPFD_MAGIC)
         r = uid;
-//    printf("- ksceKernelCreateUserUid(0x%08X, 0x%08X): 0x%08X\n", pid, uid, r);
+#if defined(LOG_ORG) && defined(LOG_UID)
+    printf("- ksceKernelCreateUserUid(0x%08X, 0x%08X): 0x%08X\n", pid, uid, r);
+#endif
     HOOK_EXIT(r);
 }
 
@@ -1118,7 +1273,9 @@ SceUID ksceKernelCreateKernelUid_Hook(SceUID pid, SceUID uid)
     SceUID r = TAI_CONTINUE(SceUID, hook_ref, pid, uid);
     if ((uid >> 16) == VPFD_MAGIC)
         r = uid;
-//    printf("- ksceKernelCreateKernelUid(0x%08X, 0x%08X): 0x%08X\n", pid, uid, r);
+#if defined(LOG_ORG) && defined(LOG_UID)
+    printf("- ksceKernelCreateKernelUid(0x%08X, 0x%08X): 0x%08X\n", pid, uid, r);
+#endif
     HOOK_EXIT(r);
 }
 
@@ -1133,7 +1290,7 @@ hook_t hooks[] = {
     { ksceIoRead_Hook, 0xE17EFC03, -1, 0, false, },
     { ksceIoLseek_Hook, 0x62090481, -1, 0, false },
     { ksceIoRename_Hook, 0xDC0C4997, -1, 0, false },
-#if defined(LOG_WRITES)
+#if defined(LOG_WRITE)
     { ksceIoWrite_Hook, 0x21EE91F0, -1, 0, false, },
 #endif
     { ksceIoDopen_Hook, 0x463B25CC, -1, 0, false },
@@ -1141,19 +1298,21 @@ hook_t hooks[] = {
     { ksceIoDclose_Hook, 0x19C81DD6, -1, 0, false },
     { sceIoLseek32_Hook, 0x49252B9B, -1, 0, false },
     { ksceIoPread_Hook, 0x2A17515D, -1, 0, false },
+    { ksceIoOpenAsync_Hook, 0x451001DE, -1, 0, false },
+    { ksceIoGetstat2_Hook, 0xD6503624, -1, 0, false },
+    { ksceIoRemove_Hook, 0x0D7BB3E1, -1, 0, false },
+    { ksceIoMkdir_Hook, 0x7F710B25, -1, 0, false },
+    { ksceIoGetstatByFd_Hook, 0x462F059B , -1, 0, false },
     { ksceKernelCreateUserUid_Hook, 0xBF209859, -1, 0, true },
     { ksceKernelCreateKernelUid_Hook, 0x45D22597, -1, 0, true },
 };
 
 // https://docs.vitasdk.org/group__SceFcntlUser.html
-// 
+// https://wiki.henkaku.xyz/vita/SceIofilemgr
+//
 // Calls we might still need:
-// - int sceIoGetDevType(SceUID fd) [?]
-// - int sceIoPread(SceUID fd, void *data, SceSize size, SceOff offset) [?]
-// - int sceIoRemove(const char *file)
-// - int sceIoRename(const char *oldname, const char *newname) [Should return RO error]
+// - int sceIoGetDevType(SceUID fd) [DOESN'T HAVE A NID AND SEEMS TO BE FOR PSP ONLY]
 // - int sceIoSyncByFd(SceUID fd) [?]
-// - SceUID sceIoOpenAsync(const char *file, int flags, SceMode mode)
 // - int sceIoCloseAsync(SceUID fd)
 // - int sceIoReadAsync(SceUID fd, void *data, SceSize size)
 // - int sceIoWriteAsync(SceUID fd, const void *data, SceSize size) [Should return RO error]
@@ -1164,7 +1323,6 @@ hook_t hooks[] = {
 // - int sceIoPollAsync(SceUID fd, SceInt64 *res) [?]
 // - int sceIoGetAsyncStat(SceUID fd, int poll, SceInt64 *res) [?]
 // - int sceIoCancel(SceUID fd)
-// - int sceIoGetDevType(SceUID fd) [?]
 // - int sceIoChangeAsyncPriority(SceUID fd, int pri) [?]
 // - int sceIoSetAsyncCallback(SceUID fd, SceUID cb, void *argp) [?]
 

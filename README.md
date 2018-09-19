@@ -23,8 +23,8 @@ This is achieved by:
 
 __Pre ALPHA__
 
-Most of the system calls are still missing, and about the most you can accomplish right now is browse the
-virtual PKG directory structure from VitaShell.
+You can browse and read data from VitaShell, but you cannot use it to promote or run apps because there are
+__unknown__ file system calls used by ScePfsMgr, which must be overridden for `sce_pfs/files.db` access...
 
 ## Compilation and testing
 

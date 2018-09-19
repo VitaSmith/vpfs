@@ -4,7 +4,7 @@ OBJS     = console.o draw.o font_data.o test.o
 
 LIBS = -lc -lSceDisplay_stub -lSceGxm_stub -lSceCtrl_stub \
 	-lSceAppUtil_stub -lSceIofilemgr_stub -lSceSysmodule_stub \
-	-ltaihen_stub
+	-lScePromoterUtil_stub -ltaihen_stub
 
 PREFIX  = arm-vita-eabi
 CC      = $(PREFIX)-gcc
