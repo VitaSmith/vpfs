@@ -21,10 +21,18 @@ This is achieved by:
 
 ## Status
 
-__Pre ALPHA__
+__ON HIATUS__
 
-You can browse and read data from VitaShell, but you cannot use it to promote or run apps because there are
-__unknown__ file system calls used by ScePfsMgr, which must be overridden for `sce_pfs/files.db` access...
+Unfortunately, promotion does not rely on `SceIo...` calls, or even `ksceVfsOpen()` and friends, which means
+that this whole endeavour has become pointless, since our goal was to enable the running of `.pkg` files,
+just like `.iso`/`.cso` could be run on PSP, without having to extract anything...
+
+There are just too many levels of file system access indirection on the Vita, and our time is too limited
+to try to figure how to override them all.
+
+So while you can use this project to browse and read data from `.pkg` without having to exract them, in
+VitaShell, you cannot use it to promote or run apps because there are __unknown__ file system calls which we
+don't know how to override (and we have now moved to working on other non PS Vita related stuff).
 
 ## Compilation and testing
 
